@@ -11,9 +11,13 @@ segmentation logit. One forward of this node yields both views the walnut work u
 - ``scores``: the zero-shot prompted anomaly map, sigmoid of the segmentation logits averaged over
   the prompt ensemble and upsampled to the input size, plus its top-k ``anomaly_score``.
 
-The weights are frozen (no ``TRAINABLE_BUFFERS``, no Phase 1); they are downloaded from the
-Hugging Face hub at construction and then travel with the pipeline ``.pt`` like any pretrained
-node. Input is an RGB frame in ``[0, 1]`` (e.g. a false-RGB projection after
+The prompts are fixed hyper-parameters, so the text tower (RoBERTa-large, 1.4 GB) runs once at
+construction: its connector features and attention masks are cached as buffers and the tower is
+dropped. Inference is the vision backbone alone, the pipeline ``.pt`` carries ~0.4 GB instead of
+~1.8 GB, and the numerics are those of the original text-conditioned forward. The weights are
+frozen (no ``TRAINABLE_BUFFERS``, no Phase 1); they are downloaded from the Hugging Face hub at
+construction and then travel with the pipeline ``.pt`` like any pretrained node. Input is an RGB
+frame in ``[0, 1]`` (e.g. a false-RGB projection after
 :class:`~cuvis_ai_steervit.node.stretch.JointPercentileStretch`); the node resizes it to the
 model resolution and applies the model's own normalisation.
 """
@@ -39,7 +43,7 @@ _ACTIVATIONS = ("sigmoid", "none")
 
 
 def _load_steervit(checkpoint: str, hf_repo: str) -> nn.Module:
-    """Build the frozen SteerViT model from a local checkpoint path or a Hugging Face filename.
+    """Build the SteerViT model from a local checkpoint path or a Hugging Face filename.
 
     Kept at module level so tests can substitute a small stand-in without touching the network.
     """
@@ -50,11 +54,7 @@ def _load_steervit(checkpoint: str, hf_repo: str) -> nn.Module:
         from huggingface_hub import hf_hub_download
 
         path = hf_hub_download(repo_id=hf_repo, filename=checkpoint)
-    model = SteerViT.from_pretrained(path)
-    model.eval()
-    for p in model.parameters():
-        p.requires_grad_(False)
-    return model
+    return SteerViT.from_pretrained(path)
 
 
 def _normalization_constants(model: nn.Module) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -66,6 +66,27 @@ def _normalization_constants(model: nn.Module) -> tuple[tuple[float, ...], tuple
     except Exception:  # noqa: BLE001 - any failure means "no transform available"
         pass
     return _IMAGENET_MEAN, _IMAGENET_STD
+
+
+@torch.no_grad()
+def _encode_prompts(model: nn.Module, prompts: list[str]) -> tuple[Tensor, Tensor]:
+    """The text side of ``SteerViT.forward`` for one prompt list, tokenised together.
+
+    Returns the connector features ``[P, L, D]`` and the full attention mask ``[P, T + L]`` (image
+    tokens always attended, padded text tokens masked), exactly as the original forward builds them
+    per call — so caching them per prompt list reproduces its numerics.
+    """
+    tok = model.tokenizer(
+        list(prompts), padding=True, truncation=True, max_length=512, return_tensors="pt"
+    )
+    tok = {k: v.to(model.text_model.device) for k, v in tok.items()}
+    text = model.text_model(**tok).last_hidden_state
+    text = model.connector(F.normalize(text, dim=-1))
+    mask = tok["attention_mask"].bool()
+    ones = torch.ones(
+        mask.shape[0], int(model.num_img_tokens), dtype=torch.bool, device=mask.device
+    )
+    return text.float(), torch.cat((ones, mask), dim=-1)
 
 
 class SteerViTExtractor(Node):
@@ -113,7 +134,7 @@ class SteerViTExtractor(Node):
         score_activation: str = "sigmoid",
         **kwargs: Any,
     ) -> None:
-        """Create the node and load the frozen weights.
+        """Create the node, load the frozen weights and cache the prompt encodings.
 
         Parameters
         ----------
@@ -157,14 +178,9 @@ class SteerViTExtractor(Node):
             **kwargs,
         )
 
-        self._model = _load_steervit(self.checkpoint, self.hf_repo)
-        # Frozen by construction, whichever loader built the model: no gradients, and eval mode
-        # is re-applied in `train()` so a training-stage pipeline cannot switch the text tower's
-        # dropout on and make the features non-deterministic.
-        self._model.eval()
-        for p in self._model.parameters():
-            p.requires_grad_(False)
-        mean, std = _normalization_constants(self._model)
+        model = _load_steervit(self.checkpoint, self.hf_repo)
+        model.eval()
+        mean, std = _normalization_constants(model)
         # Preprocessing constants, not fitted state: kept out of the state_dict.
         self.register_buffer(
             "_mean", torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1), persistent=False
@@ -172,9 +188,29 @@ class SteerViTExtractor(Node):
         self.register_buffer(
             "_std", torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1), persistent=False
         )
-        self._resolution = int(self._model.image_size[0])
-        self._grid = self._resolution // int(self._model.patch_size)
-        self._num_prefix = int(self._model.vision_model.trunk.num_prefix_tokens)
+        self._resolution = int(model.image_size[0])
+        self._grid = self._resolution // int(model.patch_size)
+        self._num_prefix = int(model.vision_model.trunk.num_prefix_tokens)
+
+        # Prompt encodings are constants of this node: compute them once, keep them as buffers
+        # (they travel in the .pt) and drop the text tower.
+        feats, mask = _encode_prompts(model, self.prompts)
+        self.register_buffer("_prompt_feats", feats)
+        self.register_buffer("_prompt_mask", mask)
+        fp = self.feature_prompt or self.prompts[0]
+        self._feature_index = self.prompts.index(fp) if fp in self.prompts else -1
+        if self._feature_index < 0:
+            f2, m2 = _encode_prompts(model, [fp])
+            self.register_buffer("_feature_feats", f2)
+            self.register_buffer("_feature_mask", m2)
+        del model.text_model
+        model.tokenizer = None
+        # Frozen by construction, whichever loader built the model: no gradients, and eval mode
+        # is re-applied in `train()` so a training-stage pipeline cannot switch dropout on and
+        # make the features non-deterministic.
+        for p in model.parameters():
+            p.requires_grad_(False)
+        self._model = model
 
     # ------------------------------------------------------------------ helpers
     def train(self, mode: bool = True) -> SteerViTExtractor:
@@ -196,15 +232,16 @@ class SteerViTExtractor(Node):
         ).clamp(0.0, 1.0)
         return (x - self._mean) / self._std
 
-    def _run(self, x: Tensor, prompts: list[str]) -> tuple[Tensor, Tensor]:
+    def _run(self, x: Tensor, feats: Tensor, mask: Tensor) -> tuple[Tensor, Tensor]:
         """One text-conditioned pass per (image, prompt): patch tokens and segmentation logits.
 
-        Returns ``patch [B, P, G*G, D]`` and ``logits [B, P, G*G]``; images are repeated per prompt
-        so a single batched call covers the whole ensemble.
+        ``feats [P, L, D]`` / ``mask [P, T + L]`` are cached prompt encodings; images are repeated
+        per prompt (image-major order) so a single batched call covers the whole ensemble.
+        Returns ``patch [B, P, G*G, D]`` and ``logits [B, P, G*G]``.
         """
-        b, p = x.shape[0], len(prompts)
-        tokens = self._model.forward(
-            x.repeat_interleave(p, dim=0), texts=prompts * b, return_segmentation_logits=False
+        b, p = x.shape[0], feats.shape[0]
+        tokens = self._model.vision_model(
+            x.repeat_interleave(p, dim=0), feats.repeat(b, 1, 1), attn_mask=mask.repeat(b, 1)
         )
         logits = self._model.get_heatmap_logits(tokens)
         patch = tokens[:, self._num_prefix :, :]
@@ -216,7 +253,7 @@ class SteerViTExtractor(Node):
         """Steered features, prompted anomaly map and image score for a batch of RGB frames."""
         b, h, w, _ = rgb_image.shape
         x = self._preprocess(rgb_image)
-        patch, logits = self._run(x, self.prompts)
+        patch, logits = self._run(x, self._prompt_feats, self._prompt_mask)
         act = torch.sigmoid(logits) if self.score_activation == "sigmoid" else logits
         grid = act.mean(dim=1).reshape(b, 1, self._grid, self._grid)
         up = F.interpolate(grid, size=(h, w), mode="bilinear", align_corners=False)
@@ -224,10 +261,9 @@ class SteerViTExtractor(Node):
         k = max(1, int(self.topk_frac * h * w))
         anomaly_score = torch.topk(up.reshape(b, -1), k, dim=1).values.mean(dim=1)
 
-        feature_prompt = self.feature_prompt or self.prompts[0]
-        if feature_prompt in self.prompts:
-            feats = patch[:, self.prompts.index(feature_prompt)]
+        if self._feature_index >= 0:
+            feats = patch[:, self._feature_index]
         else:
-            feats = self._run(x, [feature_prompt])[0][:, 0]
+            feats = self._run(x, self._feature_feats, self._feature_mask)[0][:, 0]
         features = feats.reshape(b, self._grid, self._grid, -1).contiguous()
         return {"features": features, "scores": scores, "anomaly_score": anomaly_score}

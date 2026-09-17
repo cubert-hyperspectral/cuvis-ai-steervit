@@ -12,8 +12,11 @@ Representations*, arXiv 2604.02327). One forward pass of the node yields two vie
   the sigmoid of the segmentation logits averaged over a prompt ensemble.
 
 The backbone is text-conditioned, so every prompt is one backbone pass; the node batches the whole
-ensemble into a single call. Weights are frozen (no Phase 1, no `TRAINABLE_BUFFERS`), downloaded
-from the Hugging Face hub at construction and stored in the pipeline `.pt` afterwards.
+ensemble into a single call. The prompts are fixed hyper-parameters, so the text tower
+(RoBERTa-large) runs once at construction: its encodings are cached as buffers and the tower is
+dropped, leaving the vision backbone (~0.4 GB) for inference and for the pipeline `.pt`. Weights
+are frozen (no Phase 1, no `TRAINABLE_BUFFERS`), downloaded from the Hugging Face hub at
+construction and stored in the pipeline `.pt` afterwards.
 
 ## Nodes
 

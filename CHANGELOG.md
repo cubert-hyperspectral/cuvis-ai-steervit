@@ -8,6 +8,9 @@
   map `scores [B, H, W, 1]` (activation of the segmentation logits averaged over a prompt ensemble,
   one batched backbone pass per prompt) and the top-k `anomaly_score [B]`. Checkpoint fetched from
   the Hugging Face hub at construction; `feature_prompt` selects the prompt steering the features.
+  The prompt encodings (text tower + connector) are computed once at construction and cached as
+  buffers, and the text tower is dropped: inference runs the vision backbone only and the pipeline
+  weights carry ~0.4 GB instead of ~1.8 GB, with the numerics of the original forward.
 - Added `JointPercentileStretch`: per-frame percentile stretch to `[0, 1]` with the bounds taken
   jointly over all channels (or per channel), optional 8-bit truncation.
 - Vendored the five SteerViT inference files (MIT) under `cuvis_ai_steervit/_vendor/steervit/` with
