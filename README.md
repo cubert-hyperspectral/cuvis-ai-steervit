@@ -54,16 +54,16 @@ is how the validated SteerViT feature bank was fed.
 ## Pipeline sketch: two memory banks on a cu3s stream
 
 ```
-CU3SDataNode.cube ─┬─► PatchCoreDetector (61 bands, standardize) ──► MinMaxNormalizer ─┐
-                   │                                                                    ├─► ScoreMapFusion (mean)
-                   └─► FixedWavelengthSelector 640/550/470 ─► JointPercentileStretch      │
+CU3SDataNode.cube ─┬─► PatchCoreDetector (61 bands, standardize) ──► ScoreRangeNormalizer ─┐
+                   │                                                                        ├─► ScoreMapFusion (mean)
+                   └─► FixedWavelengthSelector 640/550/470 ─► JointPercentileStretch          │
                           ─► SteerViTExtractor.features ─► PatchCoreDetector (768, standardize: false,
-                                                             reference = cube) ─► MinMaxNormalizer ─┘
+                                                             reference = cube) ─► ScoreRangeNormalizer ─┘
 ```
 
-`ScoreMapFusion` and `PatchCoreDetector` come from cuvis-ai-patchcore; the normalizers are cuvis-ai
-built-ins (`MinMaxNormalizer`, `use_running_stats: true`) fitted on normal frames in Phase 1 — affine
-and unclamped, so an anomaly scoring above the normal range keeps its rank. See `examples/`.
+`PatchCoreDetector`, `ScoreRangeNormalizer` (each bank onto its normal range: fitted 1st / 99th
+percentiles, floored, never clamped above) and `ScoreMapFusion` come from cuvis-ai-patchcore; the
+selector is a cuvis-ai built-in. All fitted state comes from Phase 1 on normal frames. See `examples/`.
 
 ## Install
 
