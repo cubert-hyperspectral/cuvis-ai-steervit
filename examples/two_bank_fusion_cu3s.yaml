@@ -3,8 +3,8 @@ metadata:
   description: >-
     Two memory banks on a 61-band cu3s stream, fused by their mean: PatchCore on the raw spectra
     (spectral outliers) and PatchCore on SteerViT (DINOv2, prompt-steered) patch features of the
-    640/550/470 false-RGB projection (shape / texture novelty). Each bank's map is percentile-
-    normalized (1st / 99th percentile fitted on normal frames) before averaging. Phase-1 fit with
+    640/550/470 false-RGB projection (shape / texture novelty). Each bank's map is min-max
+    normalized by its normal-frame score range (fitted, no clamp) before averaging. Phase-1 fit with
     examples/trainrun_two_bank_fusion_cu3s.yaml on NORMAL frames only; then run with
     restore-pipeline --weights-path <fit>.pt. Validated on walnut foreign-object detection (the
     fusion roughly doubles the pixel AP of the spectral bank on hard known objects and flags 100%
@@ -87,21 +87,19 @@ nodes:
       seed: 0
       eps: 1.0e-06
 
-  # --- common scale, then the mean
+  # --- common scale, then the mean. Affine min-max fitted on the NORMAL frames' score range with
+  # no upper clamp: an anomaly may score above anything seen on normal data and must keep its rank
+  # (a clamped percentile normalizer saturated every fake AND every real shell on a drifted session).
   - name: norm_hsi
-    class_name: cuvis_ai.node.normalization.PercentileNormalizer
+    class_name: cuvis_ai.node.normalization.MinMaxNormalizer
     hparams:
-      n_channels: 1
-      norm_mode: statistical    # bounds fitted in Phase 1 on the normal frames
-      quantile_low: 0.01
-      quantile_high: 0.99
+      eps: 1.0e-06
+      use_running_stats: true   # range fitted in Phase 1 on the normal frames
   - name: norm_steervit
-    class_name: cuvis_ai.node.normalization.PercentileNormalizer
+    class_name: cuvis_ai.node.normalization.MinMaxNormalizer
     hparams:
-      n_channels: 1
-      norm_mode: statistical
-      quantile_low: 0.01
-      quantile_high: 0.99
+      eps: 1.0e-06
+      use_running_stats: true
   - name: fuse
     class_name: cuvis_ai_patchcore.node.fusion.ScoreMapFusion
     hparams:
