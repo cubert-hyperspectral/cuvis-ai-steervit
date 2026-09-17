@@ -1,0 +1,18 @@
+# Provenance of the vendored SteerViT inference code under cuvis_ai_steervit/_vendor/steervit/.
+# Re-sync: `python tools/sync_vendor.py <ref>` (rewrites the files, prints the diff), then update `ref`
+# and `last_synced` here and describe the change in CHANGELOG.md.
+upstream:
+  repo: https://github.com/manugaurdl/SteerViT
+  ref: d385b7c3
+  subdir: src/steervit
+  files: [__init__.py, model.py, backbone.py, crossattention.py, utils.py]
+  identical_to:
+    - repo: https://github.com/JonaRuthardt/SteerViT
+      ref: 3d9eee14  # the install the walnut results were validated with
+  license: MIT, declared in the upstream pyproject.toml (no LICENSE file upstream)
+excluded_upstream_files: [train_data.py, train_utils.py]  # training only (datasets, wandb, omegaconf)
+vendored_to: cuvis_ai_steervit/_vendor/steervit
+local_changes:
+  - provenance header comment at the top of every file
+  - package-relative imports (`from steervit.<mod> import` -> `from .<mod> import`)
+last_synced: 2026-09-17
