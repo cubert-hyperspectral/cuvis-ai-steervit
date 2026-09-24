@@ -51,6 +51,31 @@ is how the validated SteerViT feature bank was fed.
 | `data` | in | `[B, H, W, C]` float32 |
 | `normalized` | out | `[B, H, W, C]` float32 in `[0, 1]` |
 
+### `cuvis_ai_steervit.node.tiling.ImageTiler` / `cuvis_ai_steervit.node.tiling.GridStitcher`
+
+Multi-scale helpers. `ImageTiler(tiles=T)` splits every image of a batch into a T x T grid of
+equal, non-overlapping tiles and stacks them along the batch (tile `(i, j)` of image `b` at index
+`b * T * T + i * T + j`), so a batched per-image node such as `SteerViTExtractor` runs on the tiles
+unchanged and resizes each tile to its own resolution. `GridStitcher(tiles=T)` reassembles the
+per-tile grids in the same order. With T = 2 the SteerViT patch grid becomes 48 x 48 instead of
+24 x 24, so a small object no longer shares its patch with the surrounding context. Both nodes are
+stateless reshapes (differentiable, device-agnostic); `ImageTiler` requires H and W divisible by T.
+They are generic and planned to move to cuvis-ai core.
+
+| Node | Port | Direction | Shape / dtype |
+|---|---|---|---|
+| `ImageTiler` | `image` | in | `[B, H, W, C]` float32 |
+| `ImageTiler` | `tiles` | out | `[B * T * T, H / T, W / T, C]` float32 |
+| `GridStitcher` | `tiles` | in | `[B * T * T, g_h, g_w, D]` float32 |
+| `GridStitcher` | `grid` | out | `[B, T * g_h, T * g_w, D]` float32 |
+
+A multi-scale feature bank runs the same prompt at two scales and averages the calibrated maps:
+
+```
+JointPercentileStretch ─┬─► SteerViTExtractor ─────────────────────────────► PatchCoreDetector ─► ScoreRangeNormalizer ─┐
+                        └─► ImageTiler(2) ─► SteerViTExtractor ─► GridStitcher(2) ─► PatchCoreDetector ─► ScoreRangeNormalizer ─┴─► ScoreMapFusion (mean)
+```
+
 ## Pipeline sketch: two memory banks on a cu3s stream
 
 ```
