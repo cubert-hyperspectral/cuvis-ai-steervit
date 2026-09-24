@@ -128,9 +128,9 @@ connections:
   - source: cu3s_data.outputs.cube
     target: patchcore_steervit.inputs.reference   # upsample the 24x24 map to the cube resolution
   - source: patchcore_hsi.outputs.scores
-    target: norm_hsi.inputs.data
+    target: norm_hsi.inputs.scores
   - source: patchcore_steervit.outputs.scores
-    target: norm_steervit.inputs.data
+    target: norm_steervit.inputs.scores
   - source: norm_hsi.outputs.normalized
     target: fuse.inputs.scores
   - source: norm_steervit.outputs.normalized

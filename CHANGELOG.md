@@ -20,3 +20,7 @@
   prompt batching, port contract, frozen state-dict round-trip, manifest loading, pipeline reload
   smoke) and a slow real-weights parity test against a golden reference produced in the reference
   environment (`tests/data/steervit_golden.pt`).
+- Added example pipelines under `examples/`: the zero-shot prompted map on a cu3s stream, and the
+  two-bank fusion (a raw 61-band bank and a SteerViT feature bank, both cuvis-ai-patchcore
+  `PatchCoreDetector`s, calibrated by `ScoreRangeNormalizer` on their `scores` port and averaged by
+  `ScoreMapFusion`) with its Phase-1 trainrun.
