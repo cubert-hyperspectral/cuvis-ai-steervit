@@ -2,7 +2,14 @@
 
 ## [Unreleased]
 
+## 0.1.0 - 2026-09-25
+
 ### Added
+- Added `ImageTiler` and `GridStitcher`: split every image of a batch into T x T equal tiles
+  stacked along the batch, and reassemble per-tile grids into one grid per image (image-major,
+  row-major order). Stateless, differentiable reshapes: `ImageTiler -> SteerViTExtractor ->
+  GridStitcher` yields a T times finer feature grid (48 x 48 for T = 2) for a multi-scale PatchCore
+  feature bank. Generic nodes, planned to move to cuvis-ai core.
 - Added `SteerViTExtractor`: frozen SteerViT (DINOv2 ViT-B/14 with gated text cross-attention)
   emitting the prompt-steered patch tokens `features [B, G, G, D]`, the zero-shot prompted anomaly
   map `scores [B, H, W, 1]` (activation of the segmentation logits averaged over a prompt ensemble,
