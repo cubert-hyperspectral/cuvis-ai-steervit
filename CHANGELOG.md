@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.1.0 - 2026-09-25
+
 ### Added
 - Added `ImageTiler` and `GridStitcher`: split every image of a batch into T x T equal tiles
   stacked along the batch, and reassemble per-tile grids into one grid per image (image-major,
