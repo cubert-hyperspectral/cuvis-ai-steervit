@@ -105,6 +105,8 @@ package_name: cuvis-ai-steervit
 capabilities:
   - class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
   - class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
+  - class_name: cuvis_ai_steervit.node.tiling.ImageTiler
+  - class_name: cuvis_ai_steervit.node.tiling.GridStitcher
 ```
 
 For a frozen, reproducible install, pin a release tag instead:
@@ -117,6 +119,8 @@ package_name: cuvis-ai-steervit
 capabilities:
   - class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
   - class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
+  - class_name: cuvis_ai_steervit.node.tiling.ImageTiler
+  - class_name: cuvis_ai_steervit.node.tiling.GridStitcher
 ```
 
 [`plugins.yaml`](plugins.yaml) is the local-path manifest of this repository, with the palette

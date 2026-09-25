@@ -1,7 +1,7 @@
 [project]
 name = "cuvis-ai-steervit"
 dynamic = ["version"]
-description = "SteerViT for Cuvis.AI: prompt-steered DINOv2 patch features and a zero-shot prompted anomaly map"
+description = "SteerViT for Cuvis.AI: prompt-steered DINOv2 patch features, a zero-shot prompted anomaly map and image tiling for multi-scale feature grids"
 requires-python = ">=3.11,<3.14"
 authors = [
   { name = "Cubert GmbH", email = "cuvis.ai@cubert-gmbh.de" },
