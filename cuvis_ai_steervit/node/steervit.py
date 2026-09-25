@@ -36,13 +36,15 @@ from torch import Tensor, nn
 
 DEFAULT_CHECKPOINT = "steervit_dinov2_base.pth"
 DEFAULT_HF_REPO = "JonaRuthardt/SteerViT"
+# The commit of DEFAULT_HF_REPO the plugin was validated with (the tests' golden reference).
+DEFAULT_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"  # pragma: allowlist secret
 DEFAULT_PROMPTS = ("the anomaly in the object",)
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 _ACTIVATIONS = ("sigmoid", "none")
 
 
-def _load_steervit(checkpoint: str, hf_repo: str) -> nn.Module:
+def _load_steervit(checkpoint: str, hf_repo: str, hf_revision: str | None) -> nn.Module:
     """Build the SteerViT model from a local checkpoint path or a Hugging Face filename.
 
     Kept at module level so tests can substitute a small stand-in without touching the network.
@@ -53,7 +55,7 @@ def _load_steervit(checkpoint: str, hf_repo: str) -> nn.Module:
     if not os.path.isfile(path):
         from huggingface_hub import hf_hub_download
 
-        path = hf_hub_download(repo_id=hf_repo, filename=checkpoint)
+        path = hf_hub_download(repo_id=hf_repo, filename=checkpoint, revision=hf_revision)
     return SteerViT.from_pretrained(path)
 
 
@@ -128,6 +130,7 @@ class SteerViTExtractor(Node):
         self,
         checkpoint: str = DEFAULT_CHECKPOINT,
         hf_repo: str = DEFAULT_HF_REPO,
+        hf_revision: str | None = DEFAULT_HF_REVISION,
         prompts: list[str] | tuple[str, ...] = DEFAULT_PROMPTS,
         feature_prompt: str | None = None,
         topk_frac: float = 0.001,
@@ -140,6 +143,9 @@ class SteerViTExtractor(Node):
         ----------
         checkpoint : local path of a SteerViT checkpoint, or its filename in ``hf_repo``.
         hf_repo : Hugging Face repository the checkpoint is downloaded from when not a local path.
+        hf_revision : commit of ``hf_repo`` the checkpoint is downloaded at; the default is the
+            validated commit of the default repository, so set it (or ``None`` for the repo's
+            default branch) together with another ``hf_repo``. Unused for a local path.
         prompts : text prompts of the zero-shot map; the map is the average over them (each prompt
             is one text-conditioned backbone pass). ``"the anomaly in the <object>"`` phrasings
             work best.
@@ -155,6 +161,8 @@ class SteerViTExtractor(Node):
             )
         if feature_prompt is not None and not str(feature_prompt).strip():
             raise ValueError("SteerViTExtractor: feature_prompt must be None or a non-empty string")
+        if hf_revision is not None and not str(hf_revision).strip():
+            raise ValueError("SteerViTExtractor: hf_revision must be None or a non-empty string")
         if not 0.0 < float(topk_frac) <= 1.0:
             raise ValueError(f"SteerViTExtractor: topk_frac must be in (0, 1], got {topk_frac}")
         if score_activation not in _ACTIVATIONS:
@@ -164,6 +172,7 @@ class SteerViTExtractor(Node):
             )
         self.checkpoint = str(checkpoint)
         self.hf_repo = str(hf_repo)
+        self.hf_revision = str(hf_revision) if hf_revision is not None else None
         self.prompts = prompts
         self.feature_prompt = str(feature_prompt) if feature_prompt is not None else None
         self.topk_frac = float(topk_frac)
@@ -171,6 +180,7 @@ class SteerViTExtractor(Node):
         super().__init__(
             checkpoint=self.checkpoint,
             hf_repo=self.hf_repo,
+            hf_revision=self.hf_revision,
             prompts=list(self.prompts),
             feature_prompt=self.feature_prompt,
             topk_frac=self.topk_frac,
@@ -178,7 +188,7 @@ class SteerViTExtractor(Node):
             **kwargs,
         )
 
-        model = _load_steervit(self.checkpoint, self.hf_repo)
+        model = _load_steervit(self.checkpoint, self.hf_repo, self.hf_revision)
         model.eval()
         mean, std = _normalization_constants(model)
         # Preprocessing constants, not fitted state: kept out of the state_dict.

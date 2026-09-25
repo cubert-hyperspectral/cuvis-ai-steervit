@@ -7,14 +7,15 @@ metadata:
     normal range (fitted 1st / 99th percentiles, floored, unclamped above) before averaging. Phase-1 fit with
     examples/trainrun_two_bank_fusion_cu3s.yaml on NORMAL frames only; then run with
     restore-pipeline --weights-path <fit>.pt. Validated on walnut foreign-object detection (the
-    fusion roughly doubles the pixel AP of the spectral bank on hard known objects and flags 100%
-    of held-out anomalous frames at a 5% frame false-alarm rate).
+    fusion roughly doubles the pixel AP of the spectral bank on hard known objects and, with the
+    banks refitted per fold on grouped hold-out recordings, flags 90% of the anomalous frames at a
+    5% frame false-alarm rate).
   tags: [anomaly, hyperspectral, patchcore, steervit, fusion, memory-bank]
   author: cuvis.ai@cubert-gmbh.de
 
 plugins:
-  - cuvis_ai_builtin   # CU3SDataNode, FixedWavelengthSelector, PercentileNormalizer
-  - patchcore          # PatchCoreDetector, ScoreMapFusion
+  - cuvis_ai_builtin   # CU3SDataNode, FixedWavelengthSelector
+  - patchcore          # PatchCoreDetector, ScoreRangeNormalizer, ScoreMapFusion
   - steervit           # SteerViTExtractor, JointPercentileStretch
 
 nodes:
