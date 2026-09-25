@@ -11,7 +11,7 @@ import yaml
 from cuvis_ai_core.node.node import Node
 from cuvis_ai_core.pipeline.pipeline import CuvisPipeline
 from cuvis_ai_core.utils.node_registry import NodeRegistry
-from cuvis_ai_schemas.enums import ExecutionStage
+from cuvis_ai_schemas.enums import ExecutionStage, NodeCategory, NodeTag
 from cuvis_ai_schemas.execution import Context
 from cuvis_ai_schemas.pipeline import PortSpec
 
@@ -27,6 +27,8 @@ H, W = 36, 44
 class _ConstantRGBSource(Node):
     """Module-scope test source: a deterministic random 3-band frame in reflectance units."""
 
+    _category = NodeCategory.SOURCE
+    _tags = frozenset({NodeTag.TORCH})
     INPUT_SPECS: dict[str, PortSpec] = {}
     OUTPUT_SPECS = {"rgb": PortSpec(dtype=torch.float32, shape=(-1, -1, -1, 3))}
 
