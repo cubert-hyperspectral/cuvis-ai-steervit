@@ -37,7 +37,7 @@ capabilities:
       shape: [-1]
       optional: false
       description: 'Image-level score [B]: mean of the top topk_frac pixels of `scores`.'
-  doc_summary: Prompt-steered SteerViT patch features and the zero-shot prompted anomaly map of an RGB frame.
+  doc_summary: Prompt-steered SteerViT patch features and the zero-shot anomaly map of an RGB frame.
 - class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
   category: transform
   tags: [normalization, preprocessing, torch]
@@ -54,4 +54,4 @@ capabilities:
       shape: [-1, -1, -1, -1]
       optional: false
       description: Same shape, per frame (x - p_low) / (p_high - p_low) clipped to [0, 1]; percentiles over all channels jointly (or per channel), optionally quantized.
-  doc_summary: Stretch each frame of a BHWC tensor to [0, 1] between two percentiles taken over all channels.
+  doc_summary: Stretch each frame of a BHWC tensor to [0, 1] between two joint-channel percentiles.
