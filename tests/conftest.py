@@ -129,7 +129,7 @@ def fake_loader(monkeypatch):
     """Route the node's model loader to the fake; returns the fake instances it created."""
     created: list[FakeSteerViT] = []
 
-    def _load(checkpoint: str, hf_repo: str) -> FakeSteerViT:
+    def _load(checkpoint: str, hf_repo: str, hf_revision: str | None) -> FakeSteerViT:
         model = FakeSteerViT()
         created.append(model)
         return model

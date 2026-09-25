@@ -6,8 +6,9 @@
 - Added `SteerViTExtractor`: frozen SteerViT (DINOv2 ViT-B/14 with gated text cross-attention)
   emitting the prompt-steered patch tokens `features [B, G, G, D]`, the zero-shot prompted anomaly
   map `scores [B, H, W, 1]` (activation of the segmentation logits averaged over a prompt ensemble,
-  one batched backbone pass per prompt) and the top-k `anomaly_score [B]`. Checkpoint fetched from
-  the Hugging Face hub at construction; `feature_prompt` selects the prompt steering the features.
+  one batched backbone pass per prompt) and the top-k `anomaly_score [B]`. The checkpoint is fetched
+  from the Hugging Face hub at construction, pinned to the validated commit (`hf_revision`), unless
+  `checkpoint` is a local path; `feature_prompt` selects the prompt steering the features.
   The prompt encodings (text tower + connector) are computed once at construction and cached as
   buffers, and the text tower is dropped: inference runs the vision backbone only and the pipeline
   weights carry ~0.4 GB instead of ~1.8 GB, with the numerics of the original forward.

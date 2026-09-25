@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from cuvis_ai_schemas.enums import ExecutionStage
 
+import cuvis_ai_steervit.node.steervit as mod
 from cuvis_ai_steervit.node.steervit import SteerViTExtractor
 from tests.conftest import DIM, FakeSteerViT, fake_preprocess
 
@@ -87,9 +88,7 @@ def test_score_activation_none_averages_raw_logits(fake_loader):
 
 
 def test_normalization_falls_back_to_imagenet_without_transforms(fake_loader, monkeypatch):
-    import cuvis_ai_steervit.node.steervit as mod
-
-    monkeypatch.setattr(mod, "_load_steervit", lambda c, r: FakeSteerViT(with_transforms=False))
+    monkeypatch.setattr(mod, "_load_steervit", lambda c, r, v: FakeSteerViT(with_transforms=False))
     node = SteerViTExtractor(name="sv")
     assert torch.allclose(node._mean.flatten(), torch.tensor([0.485, 0.456, 0.406]))
     assert torch.allclose(node._std.flatten(), torch.tensor([0.229, 0.224, 0.225]))
@@ -171,6 +170,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
     for key in (
         "checkpoint",
         "hf_repo",
+        "hf_revision",
         "prompts",
         "feature_prompt",
         "topk_frac",
@@ -180,6 +180,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
     json.dumps(hp)
     assert hp["prompts"] == ["p1", "p2"] and hp["feature_prompt"] == "p2"
     assert SteerViTExtractor(name="sv3").hparams["feature_prompt"] is None
+    assert SteerViTExtractor(name="sv4").hparams["hf_revision"] == mod.DEFAULT_HF_REVISION
 
 
 # ----- 4. validation ----------------------------------------------------------------------------
@@ -191,6 +192,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
         {"prompts": []},
         {"prompts": ["ok", "  "]},
         {"feature_prompt": ""},
+        {"hf_revision": " "},
         {"topk_frac": 0.0},
         {"topk_frac": 1.5},
         {"score_activation": "softmax"},
@@ -199,3 +201,67 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
 def test_invalid_hparams_raise(fake_loader, bad):
     with pytest.raises(ValueError):
         SteerViTExtractor(**bad)
+
+
+# ----- 5. checkpoint download --------------------------------------------------------------------
+
+
+class _Recorder:
+    """Stands in for ``SteerViT.from_pretrained``: records the path it is asked to load."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    def __call__(self, path: str) -> FakeSteerViT:
+        self.paths.append(path)
+        return FakeSteerViT()
+
+
+def test_download_is_pinned_to_the_validated_revision(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from cuvis_ai_steervit._vendor.steervit import SteerViT
+
+    calls = []
+    local = tmp_path / "steervit_dinov2_base.pth"
+
+    def _download(**kwargs):
+        calls.append(kwargs)
+        return str(local)
+
+    loader = _Recorder()
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
+    SteerViTExtractor(name="sv")
+    assert calls == [
+        {
+            "repo_id": mod.DEFAULT_HF_REPO,
+            "filename": mod.DEFAULT_CHECKPOINT,
+            "revision": mod.DEFAULT_HF_REVISION,
+        }
+    ]
+    assert loader.paths == [str(local)]
+    SteerViTExtractor(hf_repo="org/repo", hf_revision=None, name="sv2")
+    assert calls[-1] == {
+        "repo_id": "org/repo",
+        "filename": mod.DEFAULT_CHECKPOINT,
+        "revision": None,
+    }
+
+
+def test_local_checkpoint_path_skips_the_download(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from cuvis_ai_steervit._vendor.steervit import SteerViT
+
+    local = tmp_path / "my_steervit.pth"
+    local.write_bytes(b"")
+
+    def _no_download(**kwargs):
+        raise AssertionError(f"unexpected download {kwargs}")
+
+    loader = _Recorder()
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_download)
+    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
+    SteerViTExtractor(checkpoint=str(local), name="sv")
+    assert loader.paths == [str(local)]
