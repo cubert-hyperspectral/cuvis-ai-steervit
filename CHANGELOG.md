@@ -24,3 +24,8 @@
   two-bank fusion (a raw 61-band bank and a SteerViT feature bank, both cuvis-ai-patchcore
   `PatchCoreDetector`s, calibrated by `ScoreRangeNormalizer` on their `scores` port and averaged by
   `ScoreMapFusion`) with its Phase-1 trainrun.
+- Added the `cuda` dependency group for local GPU development: torch and torchvision come from the
+  cu128 index (cu130 on aarch64 Linux / Jetson). The pins are scoped to the group, so an
+  environment that installs the plugin as a path or git dependency inherits none; a guard test
+  checks this and that the committed lock (the CI lock) resolves torch from PyPI.
+- Targets cuvis-ai-core >= 0.17.4 and cuvis-ai-schemas >= 0.12.0 on Python 3.11 – 3.13.
