@@ -37,7 +37,7 @@ from torch import Tensor, nn
 DEFAULT_CHECKPOINT = "steervit_dinov2_base.pth"
 DEFAULT_HF_REPO = "JonaRuthardt/SteerViT"
 # The commit of DEFAULT_HF_REPO the plugin was validated with (the tests' golden reference).
-DEFAULT_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"
+DEFAULT_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"  # pragma: allowlist secret
 DEFAULT_PROMPTS = ("the anomaly in the object",)
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
