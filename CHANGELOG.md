@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.2.0 - 2026-09-28
+
 ### Added
 - Added `autocast_dtype` (`float16` / `bfloat16`) to `SteerViTExtractor`: the ViT backbone and the
   segmentation head run under CUDA autocast on tensor cores; CUDA inputs only, outputs stay
