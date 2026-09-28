@@ -65,9 +65,9 @@ features more than autocast does (median per-token error ~0.5 % vs ~0.1 %). In t
 the stand-rule decisions on 287 validation frames were unchanged; re-validate a pipeline before
 switching it.
 
-Under cuvis.next give deployed pipelines an explicit `engine_dir`: it runs a pipeline in a session
-with its own home directory on Linux, where the default folder is empty. Build the engines with the
-same yaml; `build-pipeline` writes them there.
+Under cuvis.next give deployed pipelines an explicit `engine_dir`: it runs each pipeline session with
+its own empty home directory (`HOME` and `USERPROFILE`, on every platform), so the default folder has
+no engines. Build the engines with the same yaml; `build-pipeline` writes them there.
 
 ### `cuvis_ai_steervit.node.stretch.JointPercentileStretch`
 

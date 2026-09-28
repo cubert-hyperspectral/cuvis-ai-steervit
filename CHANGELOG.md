@@ -22,8 +22,8 @@
   tiles in 8.4 ms (19.7 ms); the TF32 engine is slower than PyTorch's TF32 path there. TensorRT's
   fp16 moves the features more than autocast (median per-token error ~0.5 % vs ~0.1 %); in the
   walnut pipelines the stand-rule decisions on 287 validation frames were unchanged.
-- Deployed pipelines should set `engine_dir`: cuvis.next runs a session with its own home directory
-  on Linux, where the default engine folder (`~/.cache/cuvis-ai/tensorrt/<plugin>`) is empty.
+- Deployed pipelines should set `engine_dir`: cuvis.next runs each session with its own empty home
+  directory, so the default engine folder (`~/.cache/cuvis-ai/tensorrt/<plugin>`) has no engines.
 
 ## 0.2.0 - 2026-09-28
 
