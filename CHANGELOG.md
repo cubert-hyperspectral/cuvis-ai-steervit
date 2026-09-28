@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## 0.1.0 - 2026-09-25
+## 0.1.0 - 2026-09-28
 
 ### Added
 - Added `ImageTiler` and `GridStitcher`: split every image of a batch into T x T equal tiles
