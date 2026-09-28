@@ -13,6 +13,10 @@
   `autocast_dtype`. On the walnut multi-scale gate on Jetson Thor, TF32 for SteerViT and PatchCore
   cuts the frame from 190 to 59-60 ms with the gate frame scores within 0.02 %.
 
+### Changed
+- `JointPercentileStretch` sorts each frame once for both percentiles instead of once per
+  percentile (6.8 -> 4 ms per frame on Jetson Thor); the outputs are bit-identical.
+
 ## 0.1.1 - 2026-09-28
 
 ### Fixed

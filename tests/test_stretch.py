@@ -91,3 +91,28 @@ def test_hparams_json_round_trip():
     hp = node.hparams
     json.dumps(hp)
     assert hp["low"] == 2.0 and hp["quantize_levels"] == 255 and hp["per_channel"] is False
+
+
+def _sort_percentile(flat: torch.Tensor, q: float) -> torch.Tensor:
+    """The former implementation (one sort per percentile), the reference for the one-sort one."""
+    n = flat.numel()
+    s, _ = torch.sort(flat)
+    pos = torch.tensor(q / 100.0 * (n - 1), dtype=s.dtype, device=s.device)
+    lo = pos.floor().long().clamp(0, n - 1)
+    hi = pos.ceil().long().clamp(0, n - 1)
+    return s[lo] + (s[hi] - s[lo]) * (pos - lo.to(s.dtype))
+
+
+@pytest.mark.parametrize("n", [1, 2, 7, 1000, 1000 * 1080 * 3])
+@pytest.mark.parametrize("q", [0.0, 2.0, 37.5, 50.0, 98.0, 100.0])
+def test_one_sort_percentiles_are_bit_identical_to_one_sort_per_percentile(n, q):
+    from cuvis_ai_steervit.node.stretch import _percentile, _percentiles
+
+    g = torch.Generator().manual_seed(n)
+    flat = torch.rand(n, generator=g) * 4000.0
+    if n > 2:
+        flat[: n // 3] = flat[0]  # ties, as in a clipped or quantised frame
+    assert torch.equal(_percentile(flat, q), _sort_percentile(flat, q))
+    lo, hi = _percentiles(flat, (q, 100.0 - q))
+    assert torch.equal(lo, _sort_percentile(flat, q))
+    assert torch.equal(hi, _sort_percentile(flat, 100.0 - q))
