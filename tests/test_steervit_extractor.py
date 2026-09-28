@@ -175,6 +175,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
         "feature_prompt",
         "topk_frac",
         "score_activation",
+        "autocast_dtype",
     ):
         assert key in hp, key
     json.dumps(hp)
@@ -196,6 +197,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
         {"topk_frac": 0.0},
         {"topk_frac": 1.5},
         {"score_activation": "softmax"},
+        {"autocast_dtype": "float8"},
     ],
 )
 def test_invalid_hparams_raise(fake_loader, bad):
@@ -265,3 +267,28 @@ def test_local_checkpoint_path_skips_the_download(monkeypatch, tmp_path):
     monkeypatch.setattr(SteerViT, "from_pretrained", loader)
     SteerViTExtractor(checkpoint=str(local), name="sv")
     assert loader.paths == [str(local)]
+
+
+# ----- 6. reduced precision --------------------------------------------------------------------
+
+
+def test_autocast_is_a_no_op_on_cpu_inputs(fake_loader):
+    ref = SteerViTExtractor(prompts=("p1", "p2"), name="sv")
+    amp = SteerViTExtractor(prompts=("p1", "p2"), autocast_dtype="float16", name="sv_amp")
+    assert amp.hparams["autocast_dtype"] == "float16" and ref.hparams["autocast_dtype"] is None
+    rgb = _rgb(3)
+    a, b = ref(rgb_image=rgb), amp(rgb_image=rgb)
+    for port in ("features", "scores", "anomaly_score"):
+        assert torch.equal(a[port], b[port]), port
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required for autocast")
+@pytest.mark.parametrize("dtype", ["float16", "bfloat16"])
+def test_autocast_on_cuda_keeps_float32_outputs_close_to_fp32(fake_loader, dtype):
+    ref = SteerViTExtractor(prompts=("p1", "p2"), name="sv").cuda()
+    amp = SteerViTExtractor(prompts=("p1", "p2"), autocast_dtype=dtype, name="sv_amp").cuda()
+    rgb = _rgb(3).cuda()
+    a, b = ref(rgb_image=rgb), amp(rgb_image=rgb)
+    for port in ("features", "scores", "anomaly_score"):
+        assert b[port].dtype == torch.float32, port
+        assert torch.allclose(b[port], a[port], rtol=2e-2, atol=2e-2), port

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- Added `autocast_dtype` (`float16` / `bfloat16`) to `SteerViTExtractor`: the ViT backbone and the
+  segmentation head run under CUDA autocast on tensor cores; CUDA inputs only, outputs stay
+  float32. On the walnut multi-scale gate (laptop RTX 4070) float16 halves the SteerViT time
+  (72.8 -> 32.6 ms for t1 + t2, 84 -> 44 ms per frame) with the gate frame scores within 0.06 %
+  and identical decisions on the probe frames; re-validate a pipeline before switching it.
+
 ## 0.1.1 - 2026-09-28
 
 ### Fixed
