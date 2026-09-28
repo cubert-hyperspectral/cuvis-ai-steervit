@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+- Added a TensorRT backend to `SteerViTExtractor` (`backend="tensorrt"`, `engine_dir`): the
+  text-conditioned backbone pass and the head run as a TensorRT engine with the node's cached
+  prompt encodings baked in, one engine per batch size; the preprocessing, prompt averaging,
+  upsampling and score stay in torch. The engine precision follows the node's options (float16
+  autocast -> fp16, `tf32` -> TF32, neither -> IEEE float32). Engine file names carry a fingerprint
+  of the weights and prompts, the precision, batch, resolution, GPU and TensorRT version; loading
+  new weights drops the loaded engines. Not offered for bfloat16, nor with a `feature_prompt`
+  outside `prompts`.
+- Added `python -m cuvis_ai_steervit.trt_engine build-pipeline <yaml>`, which builds the engines of
+  a pipeline's `backend: tensorrt` nodes, each for the batch it sees (an `ImageTiler` with `tiles=k`
+  feeds `k*k` tiles).
+- Added the `tensorrt` extra: TensorRT 10.15.1.29 for torch's CUDA (`tensorrt-cu12` / `-cu13`) and
+  onnx.
+- On Jetson Thor the fp16 engine runs one 336 px frame in 3.1 ms (7.7 ms under autocast) and four
+  tiles in 8.4 ms (19.7 ms); the TF32 engine is slower than PyTorch's TF32 path there. TensorRT's
+  fp16 moves the features more than autocast (median per-token error ~0.5 % vs ~0.1 %); in the
+  walnut pipelines the stand-rule decisions on 287 validation frames were unchanged.
+
 ## 0.2.0 - 2026-09-28
 
 ### Added
