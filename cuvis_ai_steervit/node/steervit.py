@@ -25,6 +25,8 @@ model resolution and applies the model's own normalisation.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -42,6 +44,26 @@ DEFAULT_PROMPTS = ("the anomaly in the object",)
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 _ACTIVATIONS = ("sigmoid", "none")
+_AUTOCAST_DTYPES: dict[str, torch.dtype] = {
+    "float16": torch.float16,
+    "fp16": torch.float16,
+    "bfloat16": torch.bfloat16,
+    "bf16": torch.bfloat16,
+}
+
+
+@contextmanager
+def _tf32_matmul(enabled: bool) -> Iterator[None]:
+    """Allow TF32 tensor-core matmuls inside the block and restore the process setting after it."""
+    if not enabled:
+        yield
+        return
+    previous = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("high")
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
 
 
 def _load_steervit(checkpoint: str, hf_repo: str, hf_revision: str | None) -> nn.Module:
@@ -135,6 +157,8 @@ class SteerViTExtractor(Node):
         feature_prompt: str | None = None,
         topk_frac: float = 0.001,
         score_activation: str = "sigmoid",
+        autocast_dtype: str | None = None,
+        tf32: bool = False,
         **kwargs: Any,
     ) -> None:
         """Create the node, load the frozen weights and cache the prompt encodings.
@@ -153,6 +177,14 @@ class SteerViTExtractor(Node):
             A prompt outside ``prompts`` costs one extra backbone pass.
         topk_frac : fraction of output pixels averaged into `anomaly_score`.
         score_activation : ``"sigmoid"`` (default) or ``"none"`` (raw logits) before averaging.
+        autocast_dtype : ``None`` (float32, default), ``"float16"`` or ``"bfloat16"``: run the ViT
+            backbone and the segmentation head under CUDA autocast (tensor cores). Applied on CUDA
+            inputs only; the outputs stay float32. The numerics change slightly, so re-validate and
+            re-calibrate a pipeline before switching it.
+        tf32 : allow TF32 tensor-core matmuls in the float32 forward (inputs rounded to a 10-bit
+            mantissa, float32 storage and accumulation). CUDA inputs only; set around this node's
+            forward and restored afterwards; ignored when ``autocast_dtype`` is set. Numerics change
+            slightly, so re-validate and re-calibrate a pipeline before switching it.
         """
         prompts = [str(p) for p in prompts]
         if not prompts or any(not p.strip() for p in prompts):
@@ -170,6 +202,11 @@ class SteerViTExtractor(Node):
                 f"SteerViTExtractor: score_activation must be one of {_ACTIVATIONS}, "
                 f"got {score_activation!r}"
             )
+        if autocast_dtype is not None and autocast_dtype not in _AUTOCAST_DTYPES:
+            raise ValueError(
+                f"SteerViTExtractor: autocast_dtype must be None or one of "
+                f"{sorted(_AUTOCAST_DTYPES)}, got {autocast_dtype!r}"
+            )
         self.checkpoint = str(checkpoint)
         self.hf_repo = str(hf_repo)
         self.hf_revision = str(hf_revision) if hf_revision is not None else None
@@ -177,6 +214,8 @@ class SteerViTExtractor(Node):
         self.feature_prompt = str(feature_prompt) if feature_prompt is not None else None
         self.topk_frac = float(topk_frac)
         self.score_activation = str(score_activation)
+        self.autocast_dtype = autocast_dtype
+        self.tf32 = bool(tf32)
         super().__init__(
             checkpoint=self.checkpoint,
             hf_repo=self.hf_repo,
@@ -185,8 +224,11 @@ class SteerViTExtractor(Node):
             feature_prompt=self.feature_prompt,
             topk_frac=self.topk_frac,
             score_activation=self.score_activation,
+            autocast_dtype=self.autocast_dtype,
+            tf32=self.tf32,
             **kwargs,
         )
+        self._amp_dtype = _AUTOCAST_DTYPES.get(autocast_dtype) if autocast_dtype else None
 
         model = _load_steervit(self.checkpoint, self.hf_repo, self.hf_revision)
         model.eval()
@@ -250,12 +292,18 @@ class SteerViTExtractor(Node):
         Returns ``patch [B, P, G*G, D]`` and ``logits [B, P, G*G]``.
         """
         b, p = x.shape[0], feats.shape[0]
-        tokens = self._model.vision_model(
-            x.repeat_interleave(p, dim=0), feats.repeat(b, 1, 1), attn_mask=mask.repeat(b, 1)
-        )
-        logits = self._model.get_heatmap_logits(tokens)
-        patch = tokens[:, self._num_prefix :, :]
-        return patch.reshape(b, p, patch.shape[1], patch.shape[2]), logits.reshape(b, p, -1)
+        amp = self._amp_dtype is not None and x.is_cuda
+        tf32 = self.tf32 and x.is_cuda and not amp
+        with (
+            torch.autocast(device_type="cuda", dtype=self._amp_dtype, enabled=amp),
+            _tf32_matmul(tf32),
+        ):
+            tokens = self._model.vision_model(
+                x.repeat_interleave(p, dim=0), feats.repeat(b, 1, 1), attn_mask=mask.repeat(b, 1)
+            )
+            logits = self._model.get_heatmap_logits(tokens)
+        patch = tokens[:, self._num_prefix :, :].float()  # outputs stay float32 under autocast
+        return patch.reshape(b, p, patch.shape[1], patch.shape[2]), logits.float().reshape(b, p, -1)
 
     # ------------------------------------------------------------------ inference
     @torch.no_grad()

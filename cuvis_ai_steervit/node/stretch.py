@@ -19,14 +19,22 @@ from cuvis_ai_schemas.pipeline import PortSpec
 from torch import Tensor
 
 
-def _percentile(flat: Tensor, q: float) -> Tensor:
-    """Linear-interpolation percentile of a 1-D tensor (numpy's default method), any length."""
+def _percentiles(flat: Tensor, qs: tuple[float, ...]) -> list[Tensor]:
+    """Linear-interpolation percentiles (numpy's default method) of a 1-D tensor, from one sort."""
     n = flat.numel()
     s, _ = torch.sort(flat)
-    pos = torch.tensor(q / 100.0 * (n - 1), dtype=s.dtype, device=s.device)
-    lo = pos.floor().long().clamp(0, n - 1)
-    hi = pos.ceil().long().clamp(0, n - 1)
-    return s[lo] + (s[hi] - s[lo]) * (pos - lo.to(s.dtype))
+    out = []
+    for q in qs:
+        pos = torch.tensor(q / 100.0 * (n - 1), dtype=s.dtype, device=s.device)
+        lo = pos.floor().long().clamp(0, n - 1)
+        hi = pos.ceil().long().clamp(0, n - 1)
+        out.append(s[lo] + (s[hi] - s[lo]) * (pos - lo.to(s.dtype)))
+    return out
+
+
+def _percentile(flat: Tensor, q: float) -> Tensor:
+    """One linear-interpolation percentile of a 1-D tensor (numpy's default method), any length."""
+    return _percentiles(flat, (q,))[0]
 
 
 class JointPercentileStretch(Node):
@@ -97,13 +105,13 @@ class JointPercentileStretch(Node):
 
     def _stretch(self, frame: Tensor) -> Tensor:
         """Stretch one [H, W, C] frame."""
-        if self.per_channel:
+        if self.per_channel:  # one sort per channel serves both percentiles
             cols = frame.reshape(-1, frame.shape[-1])
-            lo = torch.stack([_percentile(cols[:, c], self.low) for c in range(cols.shape[1])])
-            hi = torch.stack([_percentile(cols[:, c], self.high) for c in range(cols.shape[1])])
-        else:
-            flat = frame.reshape(-1)
-            lo, hi = _percentile(flat, self.low), _percentile(flat, self.high)
+            pairs = [_percentiles(cols[:, c], (self.low, self.high)) for c in range(cols.shape[1])]
+            lo = torch.stack([p[0] for p in pairs])
+            hi = torch.stack([p[1] for p in pairs])
+        else:  # one sort of the frame serves both percentiles
+            lo, hi = _percentiles(frame.reshape(-1), (self.low, self.high))
         out = ((frame - lo) / (hi - lo).clamp_min(self.eps)).clamp(0.0, 1.0)
         if self.quantize_levels is not None:  # truncation, as a uint8 cast of a [0, 1] image does
             out = torch.floor(out * self.quantize_levels) / self.quantize_levels
