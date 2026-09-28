@@ -25,6 +25,8 @@ model resolution and applies the model's own normalisation.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import torch
@@ -48,6 +50,20 @@ _AUTOCAST_DTYPES: dict[str, torch.dtype] = {
     "bfloat16": torch.bfloat16,
     "bf16": torch.bfloat16,
 }
+
+
+@contextmanager
+def _tf32_matmul(enabled: bool) -> Iterator[None]:
+    """Allow TF32 tensor-core matmuls inside the block and restore the process setting after it."""
+    if not enabled:
+        yield
+        return
+    previous = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision("high")
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
 
 
 def _load_steervit(checkpoint: str, hf_repo: str, hf_revision: str | None) -> nn.Module:
@@ -142,6 +158,7 @@ class SteerViTExtractor(Node):
         topk_frac: float = 0.001,
         score_activation: str = "sigmoid",
         autocast_dtype: str | None = None,
+        tf32: bool = False,
         **kwargs: Any,
     ) -> None:
         """Create the node, load the frozen weights and cache the prompt encodings.
@@ -164,6 +181,10 @@ class SteerViTExtractor(Node):
             backbone and the segmentation head under CUDA autocast (tensor cores). Applied on CUDA
             inputs only; the outputs stay float32. The numerics change slightly, so re-validate and
             re-calibrate a pipeline before switching it.
+        tf32 : allow TF32 tensor-core matmuls in the float32 forward (inputs rounded to a 10-bit
+            mantissa, float32 storage and accumulation). CUDA inputs only; set around this node's
+            forward and restored afterwards; ignored when ``autocast_dtype`` is set. Numerics change
+            slightly, so re-validate and re-calibrate a pipeline before switching it.
         """
         prompts = [str(p) for p in prompts]
         if not prompts or any(not p.strip() for p in prompts):
@@ -194,6 +215,7 @@ class SteerViTExtractor(Node):
         self.topk_frac = float(topk_frac)
         self.score_activation = str(score_activation)
         self.autocast_dtype = autocast_dtype
+        self.tf32 = bool(tf32)
         super().__init__(
             checkpoint=self.checkpoint,
             hf_repo=self.hf_repo,
@@ -203,6 +225,7 @@ class SteerViTExtractor(Node):
             topk_frac=self.topk_frac,
             score_activation=self.score_activation,
             autocast_dtype=self.autocast_dtype,
+            tf32=self.tf32,
             **kwargs,
         )
         self._amp_dtype = _AUTOCAST_DTYPES.get(autocast_dtype) if autocast_dtype else None
@@ -270,7 +293,11 @@ class SteerViTExtractor(Node):
         """
         b, p = x.shape[0], feats.shape[0]
         amp = self._amp_dtype is not None and x.is_cuda
-        with torch.autocast(device_type="cuda", dtype=self._amp_dtype, enabled=amp):
+        tf32 = self.tf32 and x.is_cuda and not amp
+        with (
+            torch.autocast(device_type="cuda", dtype=self._amp_dtype, enabled=amp),
+            _tf32_matmul(tf32),
+        ):
             tokens = self._model.vision_model(
                 x.repeat_interleave(p, dim=0), feats.repeat(b, 1, 1), attn_mask=mask.repeat(b, 1)
             )

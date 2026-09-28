@@ -8,6 +8,10 @@
   float32. On the walnut multi-scale gate (laptop RTX 4070) float16 halves the SteerViT time
   (72.8 -> 32.6 ms for t1 + t2, 84 -> 44 ms per frame) with the gate frame scores within 0.06 %
   and identical decisions on the probe frames; re-validate a pipeline before switching it.
+- Added `tf32` to `SteerViTExtractor`: TF32 tensor-core matmuls in the float32 forward (float32
+  storage and accumulation), set around the node's forward and restored afterwards; ignored under
+  `autocast_dtype`. On the walnut multi-scale gate on Jetson Thor, TF32 for SteerViT and PatchCore
+  cuts the frame from 190 to 59-60 ms with the gate frame scores within 0.02 %.
 
 ## 0.1.1 - 2026-09-28
 
