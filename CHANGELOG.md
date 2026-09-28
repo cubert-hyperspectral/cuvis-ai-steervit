@@ -17,6 +17,10 @@
 - `JointPercentileStretch` sorts each frame once for both percentiles instead of once per
   percentile (6.8 -> 4 ms per frame on Jetson Thor); the outputs are bit-identical.
 
+### Fixed
+- Fixed the release workflow uploading uv's `dist/.gitignore` as a release asset
+  (`default.gitignore` on v0.1.1): it now uploads the wheel and the sdist only.
+
 ## 0.1.1 - 2026-09-28
 
 ### Fixed
