@@ -1,5 +1,5 @@
-"""SteerViTExtractor with the fake backbone: golden outputs, prompt handling, port contract,
-frozen state, serialization and hparam validation."""
+"""SteerViTExtractor with the fake backbone: golden outputs against the original text-conditioned
+forward, prompt caching and batching, port contract, frozen state, serialization, validation."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from cuvis_ai_schemas.enums import ExecutionStage
 
+import cuvis_ai_steervit.node.steervit as mod
 from cuvis_ai_steervit.node.steervit import SteerViTExtractor
 from tests.conftest import DIM, FakeSteerViT, fake_preprocess
 
@@ -24,54 +25,55 @@ def _rgb(seed: int = 0) -> torch.Tensor:
     return torch.rand(B, H, W, 3, generator=torch.Generator().manual_seed(seed))
 
 
-def _expected(model: FakeSteerViT, rgb: torch.Tensor, prompts: list[str]):
-    """Reference: per-prompt pass, sigmoid-mean map upsampled, prompt-0 tokens on the grid."""
+def _reference(model: FakeSteerViT, rgb: torch.Tensor, prompts: list[str], feature_prompt: str):
+    """The ORIGINAL SteerViT path: tokenise + text tower + vision per forward call, no caching."""
     x = fake_preprocess(rgb)
     b = rgb.shape[0]
     tok = model.forward(x.repeat_interleave(len(prompts), 0), texts=prompts * b)
     logits = model.get_heatmap_logits(tok).reshape(b, len(prompts), G * G)
     grid = torch.sigmoid(logits).mean(1).reshape(b, 1, G, G)
     scores = F.interpolate(grid, size=(H, W), mode="bilinear", align_corners=False)
-    feats = tok[:, 1:, :].reshape(b, len(prompts), G, G, DIM)[:, 0]
+    ftok = model.forward(x, texts=[feature_prompt] * b)  # its own tokenisation / padding
+    feats = ftok[:, 1:, :].reshape(b, G, G, DIM)
     return scores.permute(0, 2, 3, 1), feats
 
 
-# ----- 1. golden --------------------------------------------------------------------------------
+# ----- 1. golden: cached prompt encodings reproduce the original forward --------------------------
 
 
 def test_golden_scores_and_features(fake_loader):
     node = SteerViTExtractor(prompts=PROMPTS, name="sv")
     rgb = _rgb()
     out = node(rgb_image=rgb)
-    scores, feats = _expected(FakeSteerViT(), rgb, PROMPTS)
+    scores, feats = _reference(FakeSteerViT(), rgb, PROMPTS, PROMPTS[0])
     assert torch.allclose(out["scores"], scores, atol=1e-6)
     assert torch.allclose(out["features"], feats, atol=1e-6)
     k = max(1, int(0.001 * H * W))
     topk = torch.topk(out["scores"].reshape(B, -1), k, dim=1).values.mean(1)
     assert torch.allclose(out["anomaly_score"], topk)
-    # one batched call covers the whole ensemble: B images x 3 prompts, prompts repeated per image
-    assert fake_loader[0].calls == [PROMPTS * B]
+    # one batched vision call covers the whole ensemble: B images x 3 prompts, padded to "ccc"
+    assert fake_loader[0].vision_model.calls == [(B * 3, 3)]
 
 
 def test_feature_prompt_inside_ensemble_reuses_the_pass(fake_loader):
     node = SteerViTExtractor(prompts=PROMPTS, feature_prompt="ccc", name="sv")
     rgb = _rgb(1)
     out = node(rgb_image=rgb)
-    model = fake_loader[0]
-    assert len(model.calls) == 1
-    tok = FakeSteerViT().forward(fake_preprocess(rgb).repeat_interleave(3, 0), texts=PROMPTS * B)
-    expected = tok[:, 1:, :].reshape(B, 3, G, G, DIM)[:, 2]
-    assert torch.allclose(out["features"], expected, atol=1e-6)
+    assert len(fake_loader[0].vision_model.calls) == 1
+    # padding-invariance: "ccc" encoded inside the 3-prompt batch equals "ccc" encoded alone
+    _, feats = _reference(FakeSteerViT(), rgb, PROMPTS, "ccc")
+    assert torch.allclose(out["features"], feats, atol=1e-6)
 
 
 def test_feature_prompt_outside_ensemble_costs_one_extra_pass(fake_loader):
     node = SteerViTExtractor(prompts=PROMPTS, feature_prompt="zzzz", name="sv")
     rgb = _rgb(2)
     out = node(rgb_image=rgb)
-    model = fake_loader[0]
-    assert len(model.calls) == 2 and model.calls[1] == ["zzzz"] * B
-    tok = FakeSteerViT().forward(fake_preprocess(rgb), texts=["zzzz"] * B)
-    assert torch.allclose(out["features"], tok[:, 1:, :].reshape(B, G, G, DIM), atol=1e-6)
+    calls = fake_loader[0].vision_model.calls
+    assert len(calls) == 2 and calls[1] == (B, 4)  # B images, the 4-token extra prompt
+    _, feats = _reference(FakeSteerViT(), rgb, PROMPTS, "zzzz")
+    assert torch.allclose(out["features"], feats, atol=1e-6)
+    assert "_feature_feats" in node.state_dict() and "_feature_mask" in node.state_dict()
 
 
 def test_score_activation_none_averages_raw_logits(fake_loader):
@@ -86,9 +88,7 @@ def test_score_activation_none_averages_raw_logits(fake_loader):
 
 
 def test_normalization_falls_back_to_imagenet_without_transforms(fake_loader, monkeypatch):
-    import cuvis_ai_steervit.node.steervit as mod
-
-    monkeypatch.setattr(mod, "_load_steervit", lambda c, r: FakeSteerViT(with_transforms=False))
+    monkeypatch.setattr(mod, "_load_steervit", lambda c, r, v: FakeSteerViT(with_transforms=False))
     node = SteerViTExtractor(name="sv")
     assert torch.allclose(node._mean.flatten(), torch.tensor([0.485, 0.456, 0.406]))
     assert torch.allclose(node._std.flatten(), torch.tensor([0.229, 0.224, 0.225]))
@@ -122,7 +122,7 @@ def test_batch_matches_per_sample(fake_loader):
         assert torch.allclose(batched["features"][i], single["features"][0], atol=1e-6)
 
 
-# ----- 3. frozen state + serialization ----------------------------------------------------------
+# ----- 3. frozen state, cached prompts, serialization -------------------------------------------
 
 
 def test_frozen_model_stays_in_eval_mode_under_train(fake_loader):
@@ -134,11 +134,25 @@ def test_frozen_model_stays_in_eval_mode_under_train(fake_loader):
     assert not node._model.training
 
 
+def test_text_tower_is_dropped_and_prompts_are_cached_buffers(fake_loader):
+    node = SteerViTExtractor(prompts=PROMPTS, name="sv")
+    assert not hasattr(node._model, "text_model") and node._model.tokenizer is None
+    assert node._prompt_feats.shape == (3, 3, DIM)  # [P, L (padded to "ccc"), D]
+    assert node._prompt_mask.shape == (3, node._model.num_img_tokens + 3)
+    assert (
+        node._prompt_mask.dtype == torch.bool
+        and node._prompt_mask[:, : node._model.num_img_tokens].all()
+    )
+    keys = set(node.state_dict())
+    assert {"_prompt_feats", "_prompt_mask"} <= keys
+    assert not any("text_model" in k for k in keys)
+
+
 def test_weights_are_frozen_and_travel_in_the_state_dict(fake_loader):
     node = SteerViTExtractor(name="sv")
     assert all(not p.requires_grad for p in node.parameters())  # frozen by the node, not the loader
     keys = set(node.state_dict())
-    assert {"_model.head.weight", "_model.head.bias"} <= keys
+    assert {"_model.head.weight", "_model.head.bias", "_model.connector.weight"} <= keys
     assert not any(
         k.endswith(("_mean", "_std")) for k in keys
     )  # preprocessing constants, not state
@@ -156,6 +170,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
     for key in (
         "checkpoint",
         "hf_repo",
+        "hf_revision",
         "prompts",
         "feature_prompt",
         "topk_frac",
@@ -165,6 +180,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
     json.dumps(hp)
     assert hp["prompts"] == ["p1", "p2"] and hp["feature_prompt"] == "p2"
     assert SteerViTExtractor(name="sv3").hparams["feature_prompt"] is None
+    assert SteerViTExtractor(name="sv4").hparams["hf_revision"] == mod.DEFAULT_HF_REVISION
 
 
 # ----- 4. validation ----------------------------------------------------------------------------
@@ -176,6 +192,7 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
         {"prompts": []},
         {"prompts": ["ok", "  "]},
         {"feature_prompt": ""},
+        {"hf_revision": " "},
         {"topk_frac": 0.0},
         {"topk_frac": 1.5},
         {"score_activation": "softmax"},
@@ -184,3 +201,67 @@ def test_hparams_are_json_serializable_and_complete(fake_loader):
 def test_invalid_hparams_raise(fake_loader, bad):
     with pytest.raises(ValueError):
         SteerViTExtractor(**bad)
+
+
+# ----- 5. checkpoint download --------------------------------------------------------------------
+
+
+class _Recorder:
+    """Stands in for ``SteerViT.from_pretrained``: records the path it is asked to load."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    def __call__(self, path: str) -> FakeSteerViT:
+        self.paths.append(path)
+        return FakeSteerViT()
+
+
+def test_download_is_pinned_to_the_validated_revision(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from cuvis_ai_steervit._vendor.steervit import SteerViT
+
+    calls = []
+    local = tmp_path / "steervit_dinov2_base.pth"
+
+    def _download(**kwargs):
+        calls.append(kwargs)
+        return str(local)
+
+    loader = _Recorder()
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
+    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
+    SteerViTExtractor(name="sv")
+    assert calls == [
+        {
+            "repo_id": mod.DEFAULT_HF_REPO,
+            "filename": mod.DEFAULT_CHECKPOINT,
+            "revision": mod.DEFAULT_HF_REVISION,
+        }
+    ]
+    assert loader.paths == [str(local)]
+    SteerViTExtractor(hf_repo="org/repo", hf_revision=None, name="sv2")
+    assert calls[-1] == {
+        "repo_id": "org/repo",
+        "filename": mod.DEFAULT_CHECKPOINT,
+        "revision": None,
+    }
+
+
+def test_local_checkpoint_path_skips_the_download(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    from cuvis_ai_steervit._vendor.steervit import SteerViT
+
+    local = tmp_path / "my_steervit.pth"
+    local.write_bytes(b"")
+
+    def _no_download(**kwargs):
+        raise AssertionError(f"unexpected download {kwargs}")
+
+    loader = _Recorder()
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_download)
+    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
+    SteerViTExtractor(checkpoint=str(local), name="sv")
+    assert loader.paths == [str(local)]

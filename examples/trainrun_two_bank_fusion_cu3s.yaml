@@ -1,0 +1,35 @@
+# Phase-1-only trainrun for examples/two_bank_fusion_cu3s.yaml (TrainRunConfig, loadable by `restore-trainrun`).
+# Every fitted node is statistical (two PatchCore coresets, two percentile normalizers): StatisticalTrainer
+# runs the fit stream through the graph once per node. The TRAIN split must contain only NORMAL frames.
+#
+#   restore-trainrun --trainrun-path examples/trainrun_two_bank_fusion_cu3s.yaml \
+#       --plugins-dir <catalog holding cuvis_ai_dataloader.yaml + the patchcore and steervit manifests> --mode train
+#
+# The cu3s_multi data module reads a universe CSV (columns: source, index, split); replace the placeholder.
+
+name: two_bank_fusion_cu3s_fit
+
+pipeline: two_bank_fusion_cu3s.yaml
+
+data:
+  data_module: cu3s_multi
+  batch_size: 1
+  num_workers: 0                   # cuvis SDK handles are not fork-safe; read in the main process
+  params:
+    universe_csv: data/<normal_frames>.csv
+    processing_mode: Reflectance
+
+training:
+  seed: 0
+  max_epochs: 1
+  accelerator: auto
+
+loss_nodes: []
+metric_nodes: []
+freeze_nodes: []
+unfreeze_nodes: []
+
+output_dir: outputs/two_bank_fusion_cu3s_fit
+tags:
+  phase: "1"
+  detector: two-bank-fusion

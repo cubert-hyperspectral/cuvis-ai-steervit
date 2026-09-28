@@ -22,8 +22,9 @@ VENDOR = REPO_ROOT / "cuvis_ai_steervit" / "_vendor" / "steervit"
 UPSTREAM = "https://raw.githubusercontent.com/manugaurdl/SteerViT/{ref}/src/steervit/{name}"
 FILES = ("__init__.py", "model.py", "backbone.py", "crossattention.py", "utils.py")
 HEADER = (
-    "# Vendored from https://github.com/manugaurdl/SteerViT (src/steervit/{name}) at commit {ref},\n"
-    "# see .upstream-sync.yml for provenance and NOTICE in this folder for the licence.\n"
+    "# Vendored from https://github.com/manugaurdl/SteerViT (src/steervit/{name})\n"
+    "# at commit {ref}; see .upstream-sync.yml for provenance and NOTICE in this folder for\n"
+    "# the licence.\n"
     "# Local changes: this header and package-relative imports; nothing else.\n"
 )
 

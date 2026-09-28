@@ -1,0 +1,51 @@
+metadata:
+  name: steervit_zero_shot_cu3s
+  description: >-
+    Zero-shot prompted anomaly map on a cu3s stream, no training at all: 640/550/470 false-RGB
+    projection -> joint 2-98 % stretch -> SteerViT segmentation logits averaged over a prompt
+    ensemble. Inference-only (restore-pipeline needs no weights file; the SteerViT checkpoint is
+    fetched from the Hugging Face hub at construction).
+  tags: [anomaly, hyperspectral, steervit, zero-shot, vision-language]
+  author: cuvis.ai@cubert-gmbh.de
+
+plugins:
+  - cuvis_ai_builtin
+  - steervit
+
+nodes:
+  - name: cu3s_data
+    class_name: cuvis_ai.node.data.CU3SDataNode
+    hparams: {}
+  - name: rgb_640_550_470
+    class_name: cuvis_ai.node.channel_selector.FixedWavelengthSelector
+    hparams:
+      target_wavelengths: [640.0, 550.0, 470.0]
+      normalize_output: false
+  - name: stretch
+    class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
+    hparams:
+      low: 2.0
+      high: 98.0
+      quantize_levels: 255
+  - name: steervit
+    class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
+    hparams:
+      checkpoint: steervit_dinov2_base.pth
+      hf_repo: JonaRuthardt/SteerViT
+      prompts:
+        - the anomaly in the <object>     # replace <object> by the product name, e.g. "walnuts"
+        - an anomaly in the <object>
+        - the defect in the <object>
+        - the abnormality in the <object>
+      topk_frac: 0.001
+      score_activation: sigmoid
+
+connections:
+  - source: cu3s_data.outputs.cube
+    target: rgb_640_550_470.inputs.cube
+  - source: cu3s_data.outputs.wavelengths
+    target: rgb_640_550_470.inputs.wavelengths
+  - source: rgb_640_550_470.outputs.rgb_image
+    target: stretch.inputs.data
+  - source: stretch.outputs.normalized
+    target: steervit.inputs.rgb_image

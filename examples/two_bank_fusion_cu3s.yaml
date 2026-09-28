@@ -1,0 +1,138 @@
+metadata:
+  name: two_bank_fusion_cu3s
+  description: >-
+    Two memory banks on a 61-band cu3s stream, fused by their mean: PatchCore on the raw spectra
+    (spectral outliers) and PatchCore on SteerViT (DINOv2, prompt-steered) patch features of the
+    640/550/470 false-RGB projection (shape / texture novelty). Each bank's map is calibrated to its
+    normal range (fitted 1st / 99th percentiles, floored, unclamped above) before averaging. Phase-1 fit with
+    examples/trainrun_two_bank_fusion_cu3s.yaml on NORMAL frames only; then run with
+    restore-pipeline --weights-path <fit>.pt. Validated on walnut foreign-object detection (the
+    fusion roughly doubles the pixel AP of the spectral bank on hard known objects and, with the
+    banks refitted per fold on grouped hold-out recordings, flags 90% of the anomalous frames at a
+    5% frame false-alarm rate).
+  tags: [anomaly, hyperspectral, patchcore, steervit, fusion, memory-bank]
+  author: cuvis.ai@cubert-gmbh.de
+
+plugins:
+  - cuvis_ai_builtin   # CU3SDataNode, FixedWavelengthSelector
+  - patchcore          # PatchCoreDetector, ScoreRangeNormalizer, ScoreMapFusion
+  - steervit           # SteerViTExtractor, JointPercentileStretch
+
+nodes:
+  - name: cu3s_data
+    class_name: cuvis_ai.node.data.CU3SDataNode
+    hparams: {}
+
+  # --- spectral bank: every pixel's 61-band spectrum, z-scored, against a coreset of normal spectra
+  - name: patchcore_hsi
+    class_name: cuvis_ai_patchcore.node.patchcore.PatchCoreDetector
+    hparams:
+      input_channels: 61
+      coreset_size: 8000
+      stride: 4              # scoring grid; the 83 ms deployed setting
+      bank_stride: 4
+      pool_size: 1
+      max_bank_size: 300000
+      topk_frac: 0.001
+      chunk_size: 4096
+      autocast_dtype: null   # float16 for reduced-precision NN search on CUDA
+      standardize: true
+      seed: 0
+      eps: 1.0e-06
+
+  # --- feature bank: false-RGB -> joint 2-98 % stretch -> SteerViT patch tokens -> coreset of normal tokens
+  - name: rgb_640_550_470
+    class_name: cuvis_ai.node.channel_selector.FixedWavelengthSelector
+    hparams:
+      target_wavelengths: [640.0, 550.0, 470.0]
+      normalize_output: false   # raw bands; the stretch below does the normalisation
+  - name: stretch
+    class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
+    hparams:
+      low: 2.0
+      high: 98.0
+      per_channel: false
+      quantize_levels: 255      # mirrors the 8-bit image path the feature bank was validated with
+  - name: steervit
+    class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
+    hparams:
+      checkpoint: steervit_dinov2_base.pth
+      hf_repo: JonaRuthardt/SteerViT
+      prompts:                  # zero-shot map ensemble ("the anomaly in the <object>" phrasings)
+        - the anomaly in the walnuts
+        - an anomaly in the walnuts
+        - the anomalous region in the walnuts
+        - the defect in the walnuts
+        - a defect in the walnuts
+        - the flaw in the walnuts
+        - the damaged area in the walnuts
+        - the abnormality in the walnuts
+        - a photo of the anomaly in the walnuts
+        - the irregularity in the walnuts
+      feature_prompt: the anomaly in the walnuts   # steers the `features` output (one of the prompts)
+      topk_frac: 0.001
+      score_activation: sigmoid
+  - name: patchcore_steervit
+    class_name: cuvis_ai_patchcore.node.patchcore.PatchCoreDetector
+    hparams:
+      input_channels: 768       # ViT-B token dimension
+      coreset_size: 7200
+      stride: 1                 # the 24x24 grid is already coarse
+      bank_stride: 1
+      pool_size: 1
+      max_bank_size: 80000
+      topk_frac: 0.001
+      chunk_size: 4096
+      autocast_dtype: null
+      standardize: false        # deep features are used as they are
+      seed: 0
+      eps: 1.0e-06
+
+  # --- each bank onto its NORMAL range, then the mean. Phase 1 pools the normal frames' scores and
+  # maps their 1st / 99th percentile to 0 / 1, floored at 0 and never clamped above: an anomaly may
+  # score beyond anything seen on normal data and must keep its rank. (Min-max is set by the single
+  # most extreme normal pixel; a clamped percentile range saturates on a drifted session.)
+  - name: norm_hsi
+    class_name: cuvis_ai_patchcore.node.calibration.ScoreRangeNormalizer
+    hparams:
+      n_channels: 1
+      low: 1.0
+      high: 99.0
+      floor: true
+      fit_subsample: 4
+  - name: norm_steervit
+    class_name: cuvis_ai_patchcore.node.calibration.ScoreRangeNormalizer
+    hparams:
+      n_channels: 1
+      low: 1.0
+      high: 99.0
+      floor: true
+      fit_subsample: 4
+  - name: fuse
+    class_name: cuvis_ai_patchcore.node.fusion.ScoreMapFusion
+    hparams:
+      mode: mean
+
+connections:
+  - source: cu3s_data.outputs.cube
+    target: patchcore_hsi.inputs.cube
+  - source: cu3s_data.outputs.cube
+    target: rgb_640_550_470.inputs.cube
+  - source: cu3s_data.outputs.wavelengths
+    target: rgb_640_550_470.inputs.wavelengths
+  - source: rgb_640_550_470.outputs.rgb_image
+    target: stretch.inputs.data
+  - source: stretch.outputs.normalized
+    target: steervit.inputs.rgb_image
+  - source: steervit.outputs.features
+    target: patchcore_steervit.inputs.cube
+  - source: cu3s_data.outputs.cube
+    target: patchcore_steervit.inputs.reference   # upsample the 24x24 map to the cube resolution
+  - source: patchcore_hsi.outputs.scores
+    target: norm_hsi.inputs.scores
+  - source: patchcore_steervit.outputs.scores
+    target: norm_steervit.inputs.scores
+  - source: norm_hsi.outputs.normalized
+    target: fuse.inputs.scores
+  - source: norm_steervit.outputs.normalized
+    target: fuse.inputs.scores

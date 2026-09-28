@@ -44,10 +44,20 @@ def test_geometry_matches_reference(node, golden):
     assert torch.allclose(node._std.flatten(), torch.tensor(golden["std"]))
 
 
+def test_text_tower_dropped_after_caching(node, golden):
+    assert not hasattr(node._model, "text_model")
+    assert (
+        node._prompt_feats.shape[0] == len(golden["prompts"])
+        and node._prompt_feats.shape[-1] == 768
+    )
+    assert not any("text_model" in k for k in node.state_dict())
+
+
 def test_prompted_map_and_features_match_reference(node, golden):
+    """The cached-prompt path reproduces the ORIGINAL text-conditioned forward's numbers."""
     img = golden["image"]
     with torch.no_grad():
-        patch, logits = node._run(node._preprocess(img), node.prompts)
+        patch, logits = node._run(node._preprocess(img), node._prompt_feats, node._prompt_mask)
     grid = torch.sigmoid(logits).reshape(1, len(node.prompts), node.grid_size, node.grid_size)
     assert torch.allclose(grid[0], golden["scores_grid_per_prompt"], atol=2e-3), (
         (grid[0] - golden["scores_grid_per_prompt"]).abs().max()
