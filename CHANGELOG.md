@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## 0.3.0 - 2026-09-28
+
 ### Added
 - Added a TensorRT backend to `SteerViTExtractor` (`backend="tensorrt"`, `engine_dir`): the
   text-conditioned backbone pass and the head run as a TensorRT engine with the node's cached
