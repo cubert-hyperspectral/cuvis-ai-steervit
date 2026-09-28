@@ -74,9 +74,10 @@ class _Vision(nn.Module):
         n = (RES // PATCH) ** 2
         pooled = F.avg_pool2d(images, PATCH).flatten(2).transpose(1, 2)  # [B, n, 3]
         offs = text_feats[:, 0, 0].reshape(b, 1, 1).to(images.dtype)  # prompt-dependent scalar
-        ones = torch.ones(b, n, 1, dtype=images.dtype)
+        ones = torch.ones(b, n, 1, dtype=images.dtype, device=images.device)
         tok = torch.cat([pooled, pooled * offs, offs.expand(b, n, 1), ones], dim=-1)  # [B, n, 8]
-        return torch.cat([torch.zeros(b, 1, DIM, dtype=images.dtype), tok], dim=1)  # + prefix
+        prefix = torch.zeros(b, 1, DIM, dtype=images.dtype, device=images.device)
+        return torch.cat([prefix, tok], dim=1)
 
 
 class FakeSteerViT(nn.Module):
