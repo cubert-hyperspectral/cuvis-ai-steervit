@@ -20,6 +20,10 @@ construction and then travel with the pipeline ``.pt`` like any pretrained node.
 frame in ``[0, 1]`` (e.g. a false-RGB projection after
 :class:`~cuvis_ai_steervit.node.stretch.JointPercentileStretch`); the node resizes it to the
 model resolution and applies the model's own normalisation.
+
+``backend="tensorrt"`` runs the text-conditioned backbone pass and the head as a TensorRT engine
+built on the machine (:mod:`cuvis_ai_steervit.trt_engine`); the preprocessing, the prompt
+averaging, the upsampling and the score stay in torch.
 """
 
 from __future__ import annotations
@@ -44,6 +48,7 @@ DEFAULT_PROMPTS = ("the anomaly in the object",)
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
 _ACTIVATIONS = ("sigmoid", "none")
+_BACKENDS = ("torch", "tensorrt")
 _AUTOCAST_DTYPES: dict[str, torch.dtype] = {
     "float16": torch.float16,
     "fp16": torch.float16,
@@ -90,6 +95,12 @@ def _normalization_constants(model: nn.Module) -> tuple[tuple[float, ...], tuple
     except Exception:  # noqa: BLE001 - any failure means "no transform available"
         pass
     return _IMAGENET_MEAN, _IMAGENET_STD
+
+
+def _drop_engines(module: nn.Module, _incompatible_keys: Any) -> None:
+    """``load_state_dict`` post hook: new weights need their own TensorRT engines."""
+    module._engines = {}
+    module._fingerprint = None
 
 
 @torch.no_grad()
@@ -159,6 +170,8 @@ class SteerViTExtractor(Node):
         score_activation: str = "sigmoid",
         autocast_dtype: str | None = None,
         tf32: bool = False,
+        backend: str = "torch",
+        engine_dir: str | None = None,
         **kwargs: Any,
     ) -> None:
         """Create the node, load the frozen weights and cache the prompt encodings.
@@ -185,6 +198,20 @@ class SteerViTExtractor(Node):
             mantissa, float32 storage and accumulation). CUDA inputs only; set around this node's
             forward and restored afterwards; ignored when ``autocast_dtype`` is set. Numerics change
             slightly, so re-validate and re-calibrate a pipeline before switching it.
+        backend : ``"torch"`` (default) runs the model in PyTorch. ``"tensorrt"`` runs a TensorRT
+            engine of the same backbone pass and head (CUDA only), one engine per batch size (a
+            tiled node sees its tiles as one batch). Its precision follows the options above:
+            ``autocast_dtype="float16"`` -> fp16 engine, ``tf32`` -> TF32 engine, neither -> IEEE
+            float32 engine. TensorRT's fp16 moves the features more than autocast does; re-validate
+            and re-calibrate a pipeline, and re-time it on the target GPU. Engines are specific to
+            one GPU, TensorRT version, weights and prompt set; build them once per machine:
+            ``python -m cuvis_ai_steervit.trt_engine build-pipeline <pipeline.yaml>``. Needs the
+            ``tensorrt`` package (the plugin's ``tensorrt`` extra). Not offered for ``bfloat16``,
+            nor with a ``feature_prompt`` outside ``prompts`` (that costs a second pass).
+        engine_dir : where the engines are kept (default:
+            :func:`cuvis_ai_steervit.trt_engine.default_engine_dir`). Engine file names carry the
+            precision, a fingerprint of the weights and prompts, the batch, the resolution, the GPU
+            and the TensorRT version, so one directory can serve several machines and pipelines.
         """
         prompts = [str(p) for p in prompts]
         if not prompts or any(not p.strip() for p in prompts):
@@ -207,6 +234,25 @@ class SteerViTExtractor(Node):
                 f"SteerViTExtractor: autocast_dtype must be None or one of "
                 f"{sorted(_AUTOCAST_DTYPES)}, got {autocast_dtype!r}"
             )
+        if backend not in _BACKENDS:
+            raise ValueError(
+                f"SteerViTExtractor: backend must be one of {_BACKENDS}, got {backend!r}"
+            )
+        if backend == "tensorrt" and _AUTOCAST_DTYPES.get(autocast_dtype) is torch.bfloat16:
+            raise ValueError(
+                "SteerViTExtractor: backend='tensorrt' has no bfloat16 engine; use float16"
+            )
+        if (
+            backend == "tensorrt"
+            and feature_prompt is not None
+            and str(feature_prompt) not in prompts
+        ):
+            raise ValueError(
+                "SteerViTExtractor: backend='tensorrt' needs feature_prompt among prompts "
+                "(one pass per call)"
+            )
+        if engine_dir is not None and not str(engine_dir).strip():
+            raise ValueError("SteerViTExtractor: engine_dir must be None or a non-empty path")
         self.checkpoint = str(checkpoint)
         self.hf_repo = str(hf_repo)
         self.hf_revision = str(hf_revision) if hf_revision is not None else None
@@ -216,6 +262,8 @@ class SteerViTExtractor(Node):
         self.score_activation = str(score_activation)
         self.autocast_dtype = autocast_dtype
         self.tf32 = bool(tf32)
+        self.backend = str(backend)
+        self.engine_dir = str(engine_dir) if engine_dir is not None else None
         super().__init__(
             checkpoint=self.checkpoint,
             hf_repo=self.hf_repo,
@@ -226,8 +274,15 @@ class SteerViTExtractor(Node):
             score_activation=self.score_activation,
             autocast_dtype=self.autocast_dtype,
             tf32=self.tf32,
+            backend=self.backend,
+            engine_dir=self.engine_dir,
             **kwargs,
         )
+        # TensorRT engines (one per batch size) load at the first forward of that batch, once the
+        # pipeline has loaded the weights, and are dropped whenever new weights are loaded.
+        self._engines: dict[int, Any] = {}
+        self._fingerprint: str | None = None
+        self.register_load_state_dict_post_hook(_drop_engines)
         self._amp_dtype = _AUTOCAST_DTYPES.get(autocast_dtype) if autocast_dtype else None
 
         model = _load_steervit(self.checkpoint, self.hf_repo, self.hf_revision)
@@ -276,6 +331,85 @@ class SteerViTExtractor(Node):
         """Patch-grid side ``G`` (24 for ViT-B/14 at 336 px)."""
         return self._grid
 
+    # ------------------------------------------------------------------ TensorRT
+    @property
+    def engine_precision(self) -> str:
+        """The TensorRT engine precision of this node's options: ``fp16``, ``tf32`` or ``fp32``."""
+        if self._amp_dtype is torch.float16:
+            return "fp16"
+        return "tf32" if self.tf32 else "fp32"
+
+    def _model_device(self) -> torch.device:
+        return self._prompt_feats.device
+
+    def _steered_pass(self, batch: int) -> nn.Module:
+        from cuvis_ai_steervit.trt_engine import SteeredPass
+
+        return SteeredPass(
+            self._model, self._prompt_feats, self._prompt_mask, self._num_prefix, batch
+        )
+
+    def engine_path(self, batch: int, device: torch.device | str | int | None = None) -> str:
+        """This machine's engine file for ``batch`` frames with the current weights and prompts."""
+        from cuvis_ai_steervit import trt_engine
+
+        if self._fingerprint is None:
+            tensors = {f"model.{k}": v for k, v in self._model.state_dict().items()}
+            tensors.update(prompt_feats=self._prompt_feats, prompt_mask=self._prompt_mask)
+            self._fingerprint = trt_engine.fingerprint(
+                tensors, f"SteerViT|{self._resolution}|{self._num_prefix}|{self._feature_index}"
+            )
+        return os.path.join(
+            self.engine_dir or trt_engine.default_engine_dir(),
+            trt_engine.engine_file_name(
+                self.engine_precision, self._fingerprint, batch, self._resolution, device
+            ),
+        )
+
+    def build_engine(self, batch: int, force: bool = False) -> tuple[str, bool]:
+        """Build this node's engine for ``batch`` frames (CUDA); returns its path, built now."""
+        from cuvis_ai_steervit import trt_engine
+
+        device = self._model_device()
+        if device.type != "cuda":
+            raise RuntimeError(
+                f"{self.name}: TensorRT engines are built on a CUDA device, the model is on "
+                f"{device}"
+            )
+        path = self.engine_path(batch, device)
+        if os.path.exists(path) and not force:
+            return path, False
+        trt_engine.build_engine(
+            self._steered_pass(batch),
+            self._resolution,
+            self.engine_precision,
+            path,
+            self._fingerprint or "",
+        )
+        self._engines.pop(int(batch), None)
+        return path, True
+
+    def _load_engine(self, batch: int, device: torch.device) -> Any:
+        from cuvis_ai_steervit import trt_engine
+
+        if device.type != "cuda":
+            raise RuntimeError(f"{self.name}: backend='tensorrt' needs a CUDA device, got {device}")
+        path = self.engine_path(batch, device)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"{self.name}: no TensorRT engine for a batch of {batch} with these weights and "
+                f"prompts on this machine at {path}. Build it once with: "
+                "python -m cuvis_ai_steervit.trt_engine build-pipeline <this pipeline's yaml>"
+            )
+        engine = trt_engine.TensorRTEngine(path, device)
+        expected = (batch, 3, self._resolution, self._resolution)
+        if tuple(engine.input_shape) != expected:
+            raise RuntimeError(
+                f"{self.name}: TensorRT engine {path} takes input {tuple(engine.input_shape)}, "
+                f"the node needs {expected}; rebuild it."
+            )
+        return engine
+
     def _preprocess(self, rgb_image: Tensor) -> Tensor:
         """BHWC [0, 1] -> normalised BCHW at the model resolution (bicubic)."""
         x = rgb_image.permute(0, 3, 1, 2)
@@ -292,6 +426,12 @@ class SteerViTExtractor(Node):
         Returns ``patch [B, P, G*G, D]`` and ``logits [B, P, G*G]``.
         """
         b, p = x.shape[0], feats.shape[0]
+        if self.backend == "tensorrt" and feats is self._prompt_feats:
+            engine = self._engines.get(b)
+            if engine is None or engine.device != x.device:  # built for another GPU: reload
+                engine = self._engines[b] = self._load_engine(b, x.device)
+            out = engine(x)  # reused buffers: copy what leaves the node
+            return out["tokens"].float().clone(), out["logits"].float().clone()
         amp = self._amp_dtype is not None and x.is_cuda
         tf32 = self.tf32 and x.is_cuda and not amp
         with (

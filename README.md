@@ -40,6 +40,34 @@ Requires `cuvis-ai-core >= 0.17.4` and `cuvis-ai-schemas >= 0.12.0` on Python 3.
 | `feature_prompt` | `null` | prompt steering `features`; `null` = `prompts[0]`; a prompt outside `prompts` costs one extra pass |
 | `topk_frac` | 0.001 | pixel fraction averaged into `anomaly_score` |
 | `score_activation` | `sigmoid` | `sigmoid` or `none` (raw logits) before averaging over prompts |
+| `autocast_dtype` | `null` | `float16` / `bfloat16`: run the backbone and head under CUDA autocast |
+| `tf32` | false | TF32 tensor-core matmuls in the float32 forward |
+| `backend` | `torch` | `tensorrt`: run the backbone pass and head as a TensorRT engine (see below) |
+| `engine_dir` | `null` | where the TensorRT engines are kept (default: the user cache) |
+
+**TensorRT backend.** `backend: tensorrt` runs the text-conditioned backbone pass and the head as a
+TensorRT engine with the node's cached prompt encodings baked in, one engine per batch size (a tiled
+node sees its tiles as one batch); the preprocessing, prompt averaging, upsampling and score stay in
+torch. The precision follows `autocast_dtype` / `tf32` (float16 -> fp16, `tf32` -> TF32, neither ->
+IEEE float32). Build the engines once per machine:
+
+```bash
+pip install "cuvis-ai-steervit[tensorrt]"   # TensorRT 10 for torch's CUDA, onnx to build
+python -m cuvis_ai_steervit.trt_engine build-pipeline pipeline.yaml
+```
+
+Engine file names carry a fingerprint of the weights and prompts, the precision, batch, resolution,
+GPU and TensorRT version; they live in `$CUVIS_AI_TRT_ENGINE_DIR/steervit` (default
+`~/.cache/cuvis-ai/tensorrt/steervit`) or `engine_dir`. Speed depends on the GPU. On Jetson Thor the
+fp16 engine runs one 336 px frame in 3.1 ms (7.7 ms under autocast) and four tiles in 8.4 ms
+(19.7 ms), while the TF32 engine is slower than PyTorch's TF32 path. TensorRT's fp16 moves the
+features more than autocast does (median per-token error ~0.5 % vs ~0.1 %). In the walnut pipelines
+the stand-rule decisions on 287 validation frames were unchanged; re-validate a pipeline before
+switching it.
+
+Under cuvis.next give deployed pipelines an explicit `engine_dir`: it runs each pipeline session with
+its own empty home directory (`HOME` and `USERPROFILE`, on every platform), so the default folder has
+no engines. Build the engines with the same yaml; `build-pipeline` writes them there.
 
 ### `cuvis_ai_steervit.node.stretch.JointPercentileStretch`
 
