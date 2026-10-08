@@ -428,7 +428,7 @@ class SteerViTExtractor(Node):
         b, p = x.shape[0], feats.shape[0]
         if self.backend == "tensorrt" and feats is self._prompt_feats:
             engine = self._engines.get(b)
-            if engine is None:
+            if engine is None or engine.device != x.device:  # built for another GPU: reload
                 engine = self._engines[b] = self._load_engine(b, x.device)
             out = engine(x)  # reused buffers: copy what leaves the node
             return out["tokens"].float().clone(), out["logits"].float().clone()

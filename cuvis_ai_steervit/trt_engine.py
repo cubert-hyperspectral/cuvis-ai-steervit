@@ -298,7 +298,8 @@ def node_batches(pipeline_yaml: str) -> dict[str, int]:
     """Frames per call of each ``backend: tensorrt`` SteerViTExtractor of a pipeline yaml.
 
     A node fed by an ``ImageTiler`` with ``tiles=k`` sees its ``k * k`` tiles as one batch; any
-    other node one frame.
+    other node one frame. Only a direct connection from the tiler to ``rgb_image`` counts: with a
+    node in between the engine is built for one frame, and the mismatch is reported when it loads.
     """
     import yaml
 
@@ -341,6 +342,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     pipe.add_argument("--force", action="store_true", help="rebuild existing engines")
     args = ap.parse_args(argv)
+    if not torch.cuda.is_available():
+        ap.exit(
+            1, "build-pipeline needs a CUDA GPU: engines are built on the device they run on.\n"
+        )
     from cuvis_ai_core.utils.restore import restore_pipeline
 
     for yaml_path in args.pipelines:

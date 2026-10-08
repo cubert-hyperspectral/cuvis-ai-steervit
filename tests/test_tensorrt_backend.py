@@ -36,6 +36,8 @@ def _rgb(b: int, seed: int = 0) -> torch.Tensor:
 class FakeEngine:
     """Stands in for a TensorRT engine: runs the exported pass in torch, records its inputs."""
 
+    device = torch.device("cpu")
+
     def __init__(self, graph):
         self.graph = graph
         self.inputs: list[torch.Tensor] = []
@@ -372,6 +374,7 @@ def test_build_pipeline_cli_builds_each_node_for_its_batch(
 ):
     import cuvis_ai_core.utils.restore as restore
 
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     built = []
     node = _trt_node()
     monkeypatch.setattr(
@@ -413,3 +416,26 @@ def test_real_tensorrt_engine_matches_the_torch_backend(fake_loader, tmp_path, k
             scale = float(want[port].abs().max())
             assert float((got[port] - want[port]).abs().max()) <= rel_tol * scale, (b, port)
     assert not node._model.training
+
+
+def test_an_engine_built_for_another_device_is_reloaded(fake_loader, monkeypatch):
+    node = _trt_node()
+    stale = FakeEngine(node._steered_pass(1))
+    stale.device = torch.device("cuda", 1)  # bound to a GPU the input does not live on
+    node._engines[1] = stale
+    loaded = []
+    monkeypatch.setattr(
+        node,
+        "_load_engine",
+        lambda batch, device: loaded.append(device) or FakeEngine(node._steered_pass(batch)),
+    )
+    node(rgb_image=_rgb(1))
+    assert loaded == [torch.device("cpu")] and node._engines[1] is not stale
+    assert not stale.inputs  # the stale engine never ran
+
+
+def test_build_pipeline_cli_needs_a_cuda_gpu(monkeypatch, capsys):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(SystemExit) as info:
+        trt_engine.main(["build-pipeline", "p.yaml"])
+    assert info.value.code == 1 and "CUDA GPU" in capsys.readouterr().err
