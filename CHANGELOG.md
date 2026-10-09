@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Added
+- Added `cuvis_ai_steervit.weights`: the three files `SteerViTExtractor` builds its model from
+  (`steervit_dinov2_base`, `vit_base_patch14_dinov2_lvd142m`, `roberta_large`), pinned to the
+  byte-identical `cubert-gmbh` mirrors by revision, sha256 and size. The package registers them with
+  cuvis-ai-core's `ModelWeights` at import and the manifest lists them in its `weights:` block
+  (`emit_metadata`), so `download-model` and CuvisNEXT provision them for an offline runtime.
+
+### Changed
+- `SteerViTExtractor` reads its checkpoint, the DINOv2 trunk and RoBERTa-large through the
+  model-weight registry (the shared cache, sha256-verified, fetched anonymously when online; an
+  offline runtime without them gets an error naming `download-model`) instead of downloading them
+  from three upstream repositories at construction. `hf_repo` defaults to `cubert-gmbh/steervit` at
+  `1a999b31`; `JonaRuthardt/SteerViT` at `4468b691`, which pipelines saved before record, resolves to
+  the same registry entry, and any other repository or revision is still downloaded from the hub.
+  The vendored files are unchanged: during construction the vendored backbone's `timm` is a stand-in
+  that loads the trunk from the registry file (`pretrained_cfg_overlay`), and the text encoder loads
+  from the mirror's snapshot folder. The bytes are the same, so the outputs are too.
+
 ## 0.3.0 - 2026-09-28
 
 ### Added

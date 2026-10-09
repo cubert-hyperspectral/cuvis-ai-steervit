@@ -9,6 +9,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 from cuvis_ai_schemas.enums import ExecutionStage
+from torch import nn
 
 import cuvis_ai_steervit.node.steervit as mod
 from cuvis_ai_steervit.node.steervit import SteerViTExtractor
@@ -206,11 +207,11 @@ def test_invalid_hparams_raise(fake_loader, bad):
         SteerViTExtractor(**bad)
 
 
-# ----- 5. checkpoint download --------------------------------------------------------------------
+# ----- 5. weights: the registry mirrors, other repositories, local files -------------------------
 
 
 class _Recorder:
-    """Stands in for ``SteerViT.from_pretrained``: records the path it is asked to load."""
+    """Stands in for ``_build_steervit``: records the checkpoint path it is asked to build from."""
 
     def __init__(self) -> None:
         self.paths: list[str] = []
@@ -220,10 +221,67 @@ class _Recorder:
         return FakeSteerViT()
 
 
-def test_download_is_pinned_to_the_validated_revision(monkeypatch, tmp_path):
+@pytest.fixture
+def no_hub(monkeypatch):
+    """Fail on any hub download."""
     import huggingface_hub
 
-    from cuvis_ai_steervit._vendor.steervit import SteerViT
+    def _no_download(**kwargs):
+        raise AssertionError(f"unexpected hub download {kwargs}")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_download)
+
+
+@pytest.fixture
+def registry(monkeypatch, tmp_path):
+    """``ModelWeights.resolve`` stand-in: a file per registry name, and the names it was asked."""
+    from cuvis_ai_core.data.model_weights import ModelWeights
+
+    asked: list[str] = []
+
+    def _resolve(name, **kwargs):
+        asked.append(name)
+        path = tmp_path / "cache" / name / "weights.bin"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        return path
+
+    monkeypatch.setattr(ModelWeights, "resolve", _resolve)
+    return asked
+
+
+def test_the_default_checkpoint_comes_from_the_registry(monkeypatch, tmp_path, registry, no_hub):
+    loader = _Recorder()
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    SteerViTExtractor(name="sv")
+    assert registry == ["steervit_dinov2_base"]
+    assert loader.paths == [str(tmp_path / "cache" / "steervit_dinov2_base" / "weights.bin")]
+
+
+def test_the_upstream_file_saved_pipelines_name_resolves_to_the_mirror(
+    monkeypatch, registry, no_hub
+):
+    """Pipelines saved before the mirror record the upstream repository and its pinned commit."""
+    loader = _Recorder()
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    SteerViTExtractor(hf_repo=mod.UPSTREAM_HF_REPO, hf_revision=mod.UPSTREAM_HF_REVISION, name="sv")
+    assert registry == ["steervit_dinov2_base"]
+
+
+def test_the_upstream_repository_without_a_revision_resolves_to_the_mirror(
+    monkeypatch, registry, no_hub
+):
+    """Pipelines saved before ``hf_revision`` existed record ``hf_repo`` alone (every walnut
+    catalog pipeline does); the revision then takes the node default."""
+    loader = _Recorder()
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    node = SteerViTExtractor(hf_repo=mod.UPSTREAM_HF_REPO, name="sv")
+    assert registry == ["steervit_dinov2_base"]
+    assert node.hparams["hf_revision"] == mod.DEFAULT_HF_REVISION
+
+
+def test_another_repository_or_revision_downloads_from_the_hub(monkeypatch, tmp_path, registry):
+    import huggingface_hub
 
     calls = []
     local = tmp_path / "steervit_dinov2_base.pth"
@@ -234,40 +292,143 @@ def test_download_is_pinned_to_the_validated_revision(monkeypatch, tmp_path):
 
     loader = _Recorder()
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", _download)
-    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
-    SteerViTExtractor(name="sv")
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    SteerViTExtractor(hf_repo="org/repo", hf_revision=None, name="sv")
+    # the upstream repository at another revision is not the mirrored file
+    SteerViTExtractor(hf_repo=mod.UPSTREAM_HF_REPO, hf_revision=None, name="sv2")
     assert calls == [
-        {
-            "repo_id": mod.DEFAULT_HF_REPO,
-            "filename": mod.DEFAULT_CHECKPOINT,
-            "revision": mod.DEFAULT_HF_REVISION,
-        }
+        {"repo_id": "org/repo", "filename": mod.DEFAULT_CHECKPOINT, "revision": None},
+        {"repo_id": mod.UPSTREAM_HF_REPO, "filename": mod.DEFAULT_CHECKPOINT, "revision": None},
     ]
-    assert loader.paths == [str(local)]
-    SteerViTExtractor(hf_repo="org/repo", hf_revision=None, name="sv2")
-    assert calls[-1] == {
-        "repo_id": "org/repo",
-        "filename": mod.DEFAULT_CHECKPOINT,
-        "revision": None,
-    }
+    assert registry == [] and loader.paths == [str(local)] * 2
 
 
-def test_local_checkpoint_path_skips_the_download(monkeypatch, tmp_path):
-    import huggingface_hub
-
-    from cuvis_ai_steervit._vendor.steervit import SteerViT
-
+def test_local_checkpoint_path_skips_the_registry_and_the_hub(
+    monkeypatch, tmp_path, registry, no_hub
+):
     local = tmp_path / "my_steervit.pth"
     local.write_bytes(b"")
-
-    def _no_download(**kwargs):
-        raise AssertionError(f"unexpected download {kwargs}")
-
     loader = _Recorder()
-    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_download)
-    monkeypatch.setattr(SteerViT, "from_pretrained", loader)
+    monkeypatch.setattr(mod, "_build_steervit", loader)
     SteerViTExtractor(checkpoint=str(local), name="sv")
-    assert loader.paths == [str(local)]
+    assert loader.paths == [str(local)] and registry == []
+
+
+class _Timm:
+    """Records ``create_model`` calls in place of the vendored backbone's timm."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def create_model(self, model_name: str, **kwargs):
+        self.calls.append((model_name, kwargs))
+        return nn.Identity()
+
+
+class _VendoredModel(nn.Module):
+    """Stands in for the vendored ``SteerViT``: builds its trunk through the backbone's timm."""
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        from cuvis_ai_steervit._vendor.steervit import backbone
+
+        self.config = config
+        self.trunk = backbone.timm.create_model(
+            config["vision_encoder"]["model_name"], pretrained=True, img_size=4
+        )
+        self.lin = nn.Linear(2, 1)
+
+
+def _checkpoint(tmp_path, text_encoder: str, model_name: str) -> str:
+    path = tmp_path / "ckpt.pth"
+    torch.save(
+        {
+            "config": {
+                "text_encoder": text_encoder,
+                "vision_encoder": {"model_name": model_name},
+            },
+            "state_dict": {"lin.weight": torch.ones(1, 2), "lin.bias": torch.zeros(1)},
+        },
+        path,
+    )
+    return str(path)
+
+
+@pytest.fixture
+def vendored(monkeypatch):
+    """The vendored SteerViT and the backbone's timm replaced by recorders."""
+    import cuvis_ai_steervit._vendor.steervit as vendor
+    from cuvis_ai_steervit._vendor.steervit import backbone
+
+    timm = _Timm()
+    monkeypatch.setattr(backbone, "timm", timm)
+    monkeypatch.setattr(vendor, "SteerViT", _VendoredModel)
+    return timm
+
+
+def test_build_reads_the_mirrored_trunk_and_text_encoder(monkeypatch, tmp_path, vendored):
+    from cuvis_ai_core.data.model_weights import ModelWeights
+
+    from cuvis_ai_steervit._vendor.steervit import backbone
+
+    snapshot = tmp_path / "models--cubert-gmbh--roberta-large" / "snapshots" / "rev"
+    trunk = tmp_path / "trunk" / "model.safetensors"
+    files = {
+        "roberta_large": snapshot / "model.safetensors",
+        "vit_base_patch14_dinov2_lvd142m": trunk,
+    }
+    monkeypatch.setattr(ModelWeights, "resolve", lambda name, **kwargs: files[name])
+    model = mod._build_steervit(
+        _checkpoint(tmp_path, "roberta-large", "vit_base_patch14_dinov2.lvd142m")
+    )
+    assert model.config["text_encoder"] == str(snapshot)
+    assert vendored.calls == [
+        (
+            "vit_base_patch14_dinov2.lvd142m",
+            {"pretrained": True, "img_size": 4, "pretrained_cfg_overlay": {"file": str(trunk)}},
+        )
+    ]
+    assert backbone.timm is vendored  # the stand-in is gone again
+    assert torch.equal(model.lin.weight, torch.ones(1, 2))
+    assert not model.training and not any(p.requires_grad for p in model.parameters())
+
+
+def test_build_leaves_unmirrored_models_to_their_own_loaders(monkeypatch, tmp_path, vendored):
+    from cuvis_ai_core.data.model_weights import ModelWeights
+
+    def _unexpected(name, **kwargs):
+        raise AssertionError(f"unexpected registry lookup {name}")
+
+    monkeypatch.setattr(ModelWeights, "resolve", _unexpected)
+    model = mod._build_steervit(
+        _checkpoint(tmp_path, "roberta-base", "vit_small_patch14_dinov2.lvd142m")
+    )
+    assert model.config["text_encoder"] == "roberta-base"
+    assert vendored.calls == [
+        ("vit_small_patch14_dinov2.lvd142m", {"pretrained": True, "img_size": 4})
+    ]
+
+
+def test_the_trunk_stand_in_is_removed_after_an_error():
+    from cuvis_ai_steervit._vendor.steervit import backbone
+
+    real = backbone.timm
+    with pytest.raises(RuntimeError, match="boom"):
+        with mod._trunk_weights_from("trunk.safetensors"):
+            assert backbone.timm is not real
+            assert backbone.timm.__name__ == real.__name__  # everything else is the real timm
+            raise RuntimeError("boom")
+    assert backbone.timm is real
+
+
+def test_text_encoder_folder_on_a_read_only_omegaconf_config():
+    omegaconf = pytest.importorskip("omegaconf")
+    cfg = omegaconf.OmegaConf.create({"text_encoder": "roberta-large"})
+    omegaconf.OmegaConf.set_readonly(cfg, True)
+    omegaconf.OmegaConf.set_struct(cfg, True)
+    mod._set_config_value(cfg, "text_encoder", "/c/models--cubert-gmbh--roberta-large/snapshots/r")
+    assert cfg["text_encoder"].endswith("snapshots/r")
+    assert omegaconf.OmegaConf.is_readonly(cfg)
 
 
 # ----- 6. reduced precision --------------------------------------------------------------------

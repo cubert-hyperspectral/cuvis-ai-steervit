@@ -15,8 +15,12 @@ The prompts are fixed hyper-parameters, so the text tower (RoBERTa-large, 1.4 GB
 construction: its connector features and attention masks are cached as buffers and the tower is
 dropped. Inference is the vision backbone alone, the pipeline ``.pt`` carries ~0.4 GB instead of
 ~1.8 GB, and the numerics are those of the original text-conditioned forward. The weights are
-frozen (no ``TRAINABLE_BUFFERS``, no Phase 1); they are downloaded from the Hugging Face hub at
-construction and then travel with the pipeline ``.pt`` like any pretrained node. Input is an RGB
+frozen (no ``TRAINABLE_BUFFERS``, no Phase 1). The three files the model is built from (the
+SteerViT checkpoint, the DINOv2 trunk and the RoBERTa-large text encoder) come from cuvis-ai-core's
+model-weight registry, which serves the byte-identical ``cubert-gmbh`` mirrors from the shared
+cache (``download-model download steervit_dinov2_base vit_base_patch14_dinov2_lvd142m
+roberta_large`` provisions them for an offline runtime); the weights then travel with the pipeline
+``.pt`` like any pretrained node. Input is an RGB
 frame in ``[0, 1]`` (e.g. a false-RGB projection after
 :class:`~cuvis_ai_steervit.node.stretch.JointPercentileStretch`); the node resizes it to the
 model resolution and applies the model's own normalisation.
@@ -28,7 +32,9 @@ averaging, the upsampling and the score stay in torch.
 
 from __future__ import annotations
 
+import copy
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -40,10 +46,30 @@ from cuvis_ai_schemas.enums import NodeCategory, NodeTag
 from cuvis_ai_schemas.pipeline import PortSpec
 from torch import Tensor, nn
 
+from cuvis_ai_steervit.weights import DINOV2_TRUNK, STEERVIT_CHECKPOINT, TEXT_ENCODER
+
 DEFAULT_CHECKPOINT = "steervit_dinov2_base.pth"
-DEFAULT_HF_REPO = "JonaRuthardt/SteerViT"
-# The commit of DEFAULT_HF_REPO the plugin was validated with (the tests' golden reference).
-DEFAULT_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"  # pragma: allowlist secret
+DEFAULT_HF_REPO = "cubert-gmbh/steervit"
+# The commit of DEFAULT_HF_REPO with the validated checkpoint (the tests' golden reference), a
+# byte-identical mirror of UPSTREAM_HF_REPO at UPSTREAM_HF_REVISION.
+DEFAULT_HF_REVISION = "1a999b3147722af849e810c8c46f409b59ae1e7f"  # pragma: allowlist secret
+UPSTREAM_HF_REPO = "JonaRuthardt/SteerViT"
+UPSTREAM_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"  # pragma: allowlist secret
+# (hf_repo, hf_revision, checkpoint) of the mirrored checkpoint: the mirror itself and the upstream
+# file it copies, which the pipelines saved before the mirror record in their hparams. Pipelines
+# saved before `hf_revision` existed record the upstream repository alone, so the revision takes
+# the node default; with the upstream repository that names the same validated file.
+_MIRRORED_CHECKPOINTS = frozenset(
+    {
+        (DEFAULT_HF_REPO, DEFAULT_HF_REVISION, DEFAULT_CHECKPOINT),
+        (UPSTREAM_HF_REPO, UPSTREAM_HF_REVISION, DEFAULT_CHECKPOINT),
+        (UPSTREAM_HF_REPO, DEFAULT_HF_REVISION, DEFAULT_CHECKPOINT),
+    }
+)
+# Model ids a checkpoint's config names that have a mirror, by registry name.
+_MIRRORED_TRUNKS = {"vit_base_patch14_dinov2.lvd142m": DINOV2_TRUNK}
+_MIRRORED_TEXT_ENCODERS = {"roberta-large": TEXT_ENCODER, "facebookai/roberta-large": TEXT_ENCODER}
+_TRUNK_LOCK = threading.Lock()
 DEFAULT_PROMPTS = ("the anomaly in the object",)
 _IMAGENET_MEAN = (0.485, 0.456, 0.406)
 _IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -71,19 +97,115 @@ def _tf32_matmul(enabled: bool) -> Iterator[None]:
         torch.set_float32_matmul_precision(previous)
 
 
+def _checkpoint_path(checkpoint: str, hf_repo: str, hf_revision: str | None) -> str:
+    """Local path of the SteerViT checkpoint the node's hyper-parameters name.
+
+    A local file is used as is. The mirrored checkpoint, named by the mirror or by the upstream
+    file it copies, comes from cuvis-ai-core's model-weight registry: the shared cache,
+    sha256-verified, downloaded anonymously when online and, in an offline runtime without it, an
+    error naming the ``download-model`` command. Any other repository, revision or file is
+    downloaded from the hub at the given revision.
+    """
+    if os.path.isfile(checkpoint):
+        return checkpoint
+    if (hf_repo, hf_revision, checkpoint) in _MIRRORED_CHECKPOINTS:
+        from cuvis_ai_core.data.model_weights import ModelWeights
+
+        return str(ModelWeights.resolve(STEERVIT_CHECKPOINT))
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo_id=hf_repo, filename=checkpoint, revision=hf_revision)
+
+
+@contextmanager
+def _trunk_weights_from(path: str | None) -> Iterator[None]:
+    """Make the vendored backbone's ``timm.create_model`` read the pretrained trunk from ``path``.
+
+    The vendored ``ViTBackbone`` calls ``timm.create_model(name, pretrained=True, ...)``, which
+    downloads the trunk from timm's hub repository. Inside the block the vendored module's ``timm``
+    is a stand-in that adds ``pretrained_cfg_overlay={"file": path}``, so timm loads the mirrored
+    file through the same checkpoint filter; the real module is put back afterwards, also on
+    error. The vendored files stay as upstream ships them (``tools/sync_vendor.py``).
+    """
+    if path is None:
+        yield
+        return
+    from cuvis_ai_steervit._vendor.steervit import backbone
+
+    real = backbone.timm
+
+    class _TimmFromFile:
+        """The real ``timm`` whose ``create_model`` loads the pretrained weights from ``path``."""
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real, name)
+
+        @staticmethod
+        def create_model(model_name: str, **kwargs: Any) -> nn.Module:
+            kwargs.setdefault("pretrained_cfg_overlay", {"file": path})
+            return real.create_model(model_name, **kwargs)
+
+    with _TRUNK_LOCK:
+        backbone.timm = _TimmFromFile()
+        try:
+            yield
+        finally:
+            backbone.timm = real
+
+
+def _set_config_value(config: Any, key: str, value: str) -> None:
+    """Set ``config[key]`` on a plain dict or an OmegaConf config, read-only or struct."""
+    try:
+        from omegaconf import DictConfig, open_dict, read_write
+    except ImportError:  # a plain-dict checkpoint needs no omegaconf
+        config[key] = value
+        return
+    if isinstance(config, DictConfig):
+        with read_write(config), open_dict(config):
+            config[key] = value
+    else:
+        config[key] = value
+
+
+def _build_steervit(path: str) -> nn.Module:
+    """The vendored ``SteerViT.from_pretrained`` with the mirrored trunk and text encoder.
+
+    Same steps (config from the checkpoint, model, non-strict state dict, frozen, eval), except
+    that a trunk or text encoder the checkpoint's config names and the registry mirrors is read
+    from the registry, so a provisioned offline runtime builds the model without the hub. The
+    checkpoint is unpickled like upstream does (its config holds OmegaConf objects); the mirrored
+    one is sha256-verified by the registry first.
+    """
+    from cuvis_ai_core.data.model_weights import ModelWeights
+
+    from cuvis_ai_steervit._vendor.steervit import SteerViT
+
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    config = copy.deepcopy(ckpt["config"])
+    trunk = _MIRRORED_TRUNKS.get(str(config["vision_encoder"]["model_name"]))
+    text = _MIRRORED_TEXT_ENCODERS.get(str(config["text_encoder"]).lower())
+    if text is not None:
+        # One folder holds config.json, the weights and the tokenizer files. Its name
+        # (models--cubert-gmbh--roberta-large) keeps the vendored "roberta" dispatch.
+        folder = str(ModelWeights.resolve(text).parent)
+        if "roberta" not in folder.lower():
+            raise RuntimeError(f"SteerViTExtractor: unexpected text encoder folder {folder}")
+        _set_config_value(config, "text_encoder", folder)
+    trunk_file = str(ModelWeights.resolve(trunk)) if trunk is not None else None
+    with _trunk_weights_from(trunk_file):
+        model = SteerViT(config)
+    model.load_state_dict(ckpt["state_dict"], strict=False)
+    for param in model.parameters():
+        param.requires_grad = False
+    return model.eval()
+
+
 def _load_steervit(checkpoint: str, hf_repo: str, hf_revision: str | None) -> nn.Module:
-    """Build the SteerViT model from a local checkpoint path or a Hugging Face filename.
+    """Build the SteerViT model the node's hyper-parameters name.
 
     Kept at module level so tests can substitute a small stand-in without touching the network.
     """
-    from cuvis_ai_steervit._vendor.steervit import SteerViT
-
-    path = checkpoint
-    if not os.path.isfile(path):
-        from huggingface_hub import hf_hub_download
-
-        path = hf_hub_download(repo_id=hf_repo, filename=checkpoint, revision=hf_revision)
-    return SteerViT.from_pretrained(path)
+    return _build_steervit(_checkpoint_path(checkpoint, hf_repo, hf_revision))
 
 
 def _normalization_constants(model: nn.Module) -> tuple[tuple[float, ...], tuple[float, ...]]:
@@ -180,6 +302,10 @@ class SteerViTExtractor(Node):
         ----------
         checkpoint : local path of a SteerViT checkpoint, or its filename in ``hf_repo``.
         hf_repo : Hugging Face repository the checkpoint is downloaded from when not a local path.
+            The default is the ``cubert-gmbh/steervit`` mirror, served by cuvis-ai-core's
+            model-weight registry (``steervit_dinov2_base``); the upstream
+            ``JonaRuthardt/SteerViT`` at its validated commit, which pipelines saved before the
+            mirror name, resolves to the same registry entry.
         hf_revision : commit of ``hf_repo`` the checkpoint is downloaded at; the default is the
             validated commit of the default repository, so set it (or ``None`` for the repo's
             default branch) together with another ``hf_repo``. Unused for a local path.
