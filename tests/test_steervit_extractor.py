@@ -486,3 +486,35 @@ def test_tf32_on_cuda_stays_close_to_fp32(fake_loader):
         assert b[port].dtype == torch.float32 and torch.allclose(
             b[port], a[port], rtol=1e-2, atol=1e-2
         )
+
+
+def test_the_former_mirror_name_resolves_to_the_original_checkpoint(monkeypatch, registry, no_hub):
+    """Yamls written while ``cubert-gmbh/steervit`` was the default keep loading after it went
+    private."""
+    loader = _Recorder()
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    SteerViTExtractor(
+        hf_repo=mod.FORMER_MIRROR_HF_REPO, hf_revision=mod.FORMER_MIRROR_HF_REVISION, name="sv"
+    )
+    assert registry == ["steervit_dinov2_base"]
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "name"),
+    [
+        ("steervit_dinov2_commercial_small.pth", "steervit_dinov2_commercial_small"),
+        ("steervit_dinov2_commercial_base.pth", "steervit_dinov2_commercial_base"),
+    ],
+)
+def test_a_commercial_checkpoint_comes_from_the_registry(
+    monkeypatch, registry, no_hub, checkpoint, name
+):
+    loader = _Recorder()
+    monkeypatch.setattr(mod, "_build_steervit", loader)
+    SteerViTExtractor(
+        checkpoint=checkpoint,
+        hf_repo=mod.COMMERCIAL_HF_REPO,
+        hf_revision=mod.COMMERCIAL_HF_REVISION,
+        name="sv",
+    )
+    assert registry == [name]

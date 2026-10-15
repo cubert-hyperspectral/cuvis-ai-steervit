@@ -91,20 +91,47 @@ capabilities:
   doc_summary: Reassemble per-tile grids produced in ImageTiler order into one grid per image.
 weights:
 - name: steervit_dinov2_base
-  display_name: SteerViT (DINOv2 base)
+  display_name: SteerViT (DINOv2 base, research)
   summary: Prompt-steered features and zero-shot anomaly maps
   used_for: [Anomaly detection, Zero-shot, Text prompts]
-  repo_id: cubert-gmbh/steervit
+  repo_id: JonaRuthardt/SteerViT
   filename: steervit_dinov2_base.pth
-  revision: 1a999b3147722af849e810c8c46f409b59ae1e7f
+  revision: 4468b69138d397fd329df00e80093387c26c77b2
   sha256: 3ee74e5fba5cdbcbbdc35042b59fc44d54a68864724186c0ba4f5e2174892e3a
   size_bytes: 92849183
-  license: Apache-2.0
-  license_file: LICENSE
+  license: other
   aliases: [steervit_dinov2_base.pth]
   selected_by: checkpoint
   default: true
-  description: 'SteerViT checkpoint, DINOv2 base variant: the prompt connector, the gated cross-attention layers and the segmentation head every SteerViTExtractor loads (mirror of JonaRuthardt/SteerViT at 4468b691, unmodified).'
+  description: 'Original SteerViT checkpoint, DINOv2 base variant: the prompt connector, the gated cross-attention layers and the segmentation head (JonaRuthardt/SteerViT at 4468b691). The upstream model card marks it for research use since 9 Oct 2026; for a product use a commercial checkpoint.'
+- name: steervit_dinov2_commercial_small
+  display_name: SteerViT commercial (DINOv2 small)
+  summary: Prompt-steered features, commercial use (Apache-2.0)
+  used_for: [Anomaly detection, Zero-shot, Text prompts]
+  repo_id: cubert-gmbh/steervit-commercial
+  filename: steervit_dinov2_commercial_small.pth
+  revision: 8c2a0918038b0019d3bbf07e0883b40d24e4b3f6
+  sha256: 6c23756039ebddb01c262710cb2f9ea774e905a6e134946b3176dbcc96c969ee
+  size_bytes: 48284373
+  license: Apache-2.0
+  license_file: LICENSE
+  aliases: [steervit_dinov2_commercial_small.pth]
+  selected_by: checkpoint
+  description: Commercial SteerViT checkpoint, DINOv2 small variant (ViT-S/14 trunk, 384-d features), published by the authors under Apache-2.0 (mirror of JonaRuthardt/SteerViT at 18469724, unmodified).
+- name: steervit_dinov2_commercial_base
+  display_name: SteerViT commercial (DINOv2 base)
+  summary: Prompt-steered features, commercial use (Apache-2.0)
+  used_for: [Anomaly detection, Zero-shot, Text prompts]
+  repo_id: cubert-gmbh/steervit-commercial
+  filename: steervit_dinov2_commercial_base.pth
+  revision: 8c2a0918038b0019d3bbf07e0883b40d24e4b3f6
+  sha256: f863021d5aaedbfd4b11d5be639936f56cfe3111ab90db6b8f9c60e40ee64833
+  size_bytes: 92345957
+  license: Apache-2.0
+  license_file: LICENSE
+  aliases: [steervit_dinov2_commercial_base.pth]
+  selected_by: checkpoint
+  description: Commercial SteerViT checkpoint, DINOv2 base variant (ViT-B/14 trunk, 768-d features), published by the authors under Apache-2.0 (mirror of JonaRuthardt/SteerViT at 18469724, unmodified).
 - name: vit_base_patch14_dinov2_lvd142m
   display_name: DINOv2 ViT-B/14 (timm, LVD-142M)
   summary: Backbone the SteerViT extractor steers

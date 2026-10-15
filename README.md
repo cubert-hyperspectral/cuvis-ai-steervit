@@ -33,9 +33,9 @@ Requires `cuvis-ai-core >= 0.17.4` and `cuvis-ai-schemas >= 0.12.0` on Python 3.
 
 | hparam | default | meaning |
 |---|---|---|
-| `checkpoint` | `steervit_dinov2_base.pth` | local checkpoint path, or its filename in `hf_repo` |
-| `hf_repo` | `cubert-gmbh/steervit` | Hugging Face repository the checkpoint is fetched from; the default (and `JonaRuthardt/SteerViT` at `4468b691…`, the upstream file it mirrors) resolves through the model-weight registry |
-| `hf_revision` | `1a999b31…` (validated commit) | commit of `hf_repo` the checkpoint is fetched at; set it (or `null` for the default branch) together with another `hf_repo` |
+| `checkpoint` | `steervit_dinov2_base.pth` | local checkpoint path, or its filename in `hf_repo`; the default is the original checkpoint (research use per its upstream model card), `steervit_dinov2_commercial_small.pth` / `steervit_dinov2_commercial_base.pth` are the commercial ones (Apache-2.0, see below) |
+| `hf_repo` | `JonaRuthardt/SteerViT` | Hugging Face repository the checkpoint is fetched from; the default, `cubert-gmbh/steervit-commercial` (commercial checkpoints) and the former mirror `cubert-gmbh/steervit` resolve through the model-weight registry |
+| `hf_revision` | `4468b691…` (validated commit) | commit of `hf_repo` the checkpoint is fetched at; `8c2a0918…` for `cubert-gmbh/steervit-commercial`; set it (or `null` for the default branch) together with another `hf_repo` |
 | `prompts` | `["the anomaly in the object"]` | prompt ensemble of the zero-shot map (one backbone pass each); `"the anomaly in the <object>"` phrasings work best |
 | `feature_prompt` | `null` | prompt steering `features`; `null` = `prompts[0]`; a prompt outside `prompts` costs one extra pass |
 | `topk_frac` | 0.001 | pixel fraction averaged into `anomaly_score` |
@@ -162,14 +162,16 @@ plugins:
 ```
 
 Dependencies are deliberately slim: `torch`, `timm<2` (DINOv2 trunk), `transformers>=4.57` (the
-RoBERTa text tower; 5.x verified) and `huggingface_hub`. The node is built from three files, declared
-in `cuvis_ai_steervit/weights.py` and in the manifest's `weights:` block and served by cuvis-ai-core's
-model-weight registry from byte-identical `cubert-gmbh` mirrors (commit-pinned, sha256-verified, no
-token needed):
+RoBERTa text tower; 5.x verified) and `huggingface_hub`. The node is built from three files: a
+SteerViT checkpoint, the DINOv2 trunk and the text encoder. They are declared in
+`cuvis_ai_steervit/weights.py` and in the manifest's `weights:` block and served by cuvis-ai-core's
+model-weight registry (commit-pinned, sha256-verified, no token needed):
 
-| registry name | mirror | size | licence |
+| registry name | repository | size | licence |
 |---|---|---|---|
-| `steervit_dinov2_base` | `cubert-gmbh/steervit` (SteerViT checkpoint) | 93 MB | Apache-2.0 |
+| `steervit_dinov2_base` | `JonaRuthardt/SteerViT` (original SteerViT checkpoint, the default) | 93 MB | research use per the upstream model card |
+| `steervit_dinov2_commercial_small` | `cubert-gmbh/steervit-commercial` (commercial checkpoint, ViT-S/14, 384-d features; option) | 48 MB | Apache-2.0 |
+| `steervit_dinov2_commercial_base` | `cubert-gmbh/steervit-commercial` (commercial checkpoint, ViT-B/14, 768-d features; option) | 92 MB | Apache-2.0 |
 | `vit_base_patch14_dinov2_lvd142m` | `cubert-gmbh/vit_base_patch14_dinov2.lvd142m` (DINOv2 ViT-B/14 trunk) | 346 MB | Apache-2.0 |
 | `roberta_large` | `cubert-gmbh/roberta-large` (text encoder and tokenizer files) | 1.42 GB | MIT |
 
@@ -217,7 +219,8 @@ change, regenerate the lock with `uv lock --no-sources` (CI resolves torch from 
 
 - Ruthardt, J., Gaur, M., Ramanan, D., Tapaswi, M., Asano, Y. M. *Steerable Visual Representations.*
   arXiv 2604.02327 (SteerViT). Code: github.com/manugaurdl/SteerViT (MIT). Weights:
-  huggingface.co/JonaRuthardt/SteerViT (Apache-2.0), mirrored as huggingface.co/cubert-gmbh/steervit.
+  huggingface.co/JonaRuthardt/SteerViT; the commercial checkpoints (Apache-2.0) are mirrored unchanged as
+  huggingface.co/cubert-gmbh/steervit-commercial.
 - Oquab, M. et al. *DINOv2: Learning Robust Visual Features without Supervision.* TMLR 2024.
 - Roth, K. et al. *Towards Total Recall in Industrial Anomaly Detection.* CVPR 2022 (PatchCore).
 

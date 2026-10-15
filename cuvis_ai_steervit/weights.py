@@ -5,13 +5,25 @@ registers the tuple with cuvis-ai-core's ``ModelWeights`` at import, and cuvis-a
 ``emit_metadata`` projects it into the plugin manifest's ``weights:`` block, so
 CuvisNEXT and the installer know what to provision without importing the plugin.
 
-``SteerViTExtractor`` builds its model from three files: the SteerViT checkpoint (the
+``SteerViTExtractor`` builds its model from three files: a SteerViT checkpoint (the
 prompt connector, the gated cross-attention layers and the segmentation head), the
-DINOv2 ViT-B/14 trunk timm builds the backbone from, and the RoBERTa-large text encoder
-that encodes the prompts. The pins come from ``tools/mirror_weights.py`` in
-cuvis-ai-core: the three repositories are byte-identical copies under ``cubert-gmbh``
-of ``JonaRuthardt/SteerViT``, ``timm/vit_base_patch14_dinov2.lvd142m`` and
-``FacebookAI/roberta-large``.
+DINOv2 trunk timm builds the backbone from, and the RoBERTa-large text encoder that
+encodes the prompts.
+
+Checkpoints, chosen by the node's ``checkpoint`` (and ``hf_repo``):
+
+- ``steervit_dinov2_base``, the original base checkpoint (the default and the one the
+  published pipelines were validated with), served from ``JonaRuthardt/SteerViT`` at its
+  validated commit. Its upstream model card marks it for research use since 9 Oct 2026.
+- ``steervit_dinov2_commercial_small`` and ``steervit_dinov2_commercial_base``, the
+  checkpoints the authors publish for commercial use under Apache-2.0, from the unchanged
+  mirror ``cubert-gmbh/steervit-commercial``. Their features differ from the original's,
+  so a pipeline that switches refits its memory banks and re-validates.
+
+The DINOv2 ViT-B/14 trunk and RoBERTa-large are byte-identical mirrors under
+``cubert-gmbh`` of ``timm/vit_base_patch14_dinov2.lvd142m`` and ``FacebookAI/roberta-large``
+(pins from cuvis-ai-core's ``tools/mirror_weights.py``). The small checkpoint's
+ViT-S/14 trunk is not mirrored; timm downloads it from ``timm/vit_small_patch14_dinov2.lvd142m``.
 """
 
 from __future__ import annotations
@@ -22,7 +34,19 @@ PLUGIN_NAME = "steervit"
 """The manifest name of this plugin (what pipelines list under ``plugins:``)."""
 
 STEERVIT_CHECKPOINT = "steervit_dinov2_base"
-"""Registry name of the SteerViT checkpoint (DINOv2 base variant)."""
+"""Registry name of the original SteerViT checkpoint (DINOv2 base variant)."""
+
+STEERVIT_COMMERCIAL_SMALL = "steervit_dinov2_commercial_small"
+"""Registry name of the commercial SteerViT checkpoint, DINOv2 small variant."""
+
+STEERVIT_COMMERCIAL_BASE = "steervit_dinov2_commercial_base"
+"""Registry name of the commercial SteerViT checkpoint, DINOv2 base variant."""
+
+COMMERCIAL_HF_REPO = "cubert-gmbh/steervit-commercial"
+"""Unchanged mirror of the commercial checkpoints of ``JonaRuthardt/SteerViT`` (at 18469724)."""
+
+COMMERCIAL_HF_REVISION = "8c2a0918038b0019d3bbf07e0883b40d24e4b3f6"  # pragma: allowlist secret
+"""Commit of :data:`COMMERCIAL_HF_REPO` the registry pins."""
 
 DINOV2_TRUNK = "vit_base_patch14_dinov2_lvd142m"
 """Registry name of the DINOv2 ViT-B/14 trunk in timm's layout."""
@@ -33,23 +57,64 @@ TEXT_ENCODER = "roberta_large"
 WEIGHTS: tuple[PluginWeightEntry, ...] = (
     PluginWeightEntry(
         name=STEERVIT_CHECKPOINT,
-        display_name="SteerViT (DINOv2 base)",
+        display_name="SteerViT (DINOv2 base, research)",
         summary="Prompt-steered features and zero-shot anomaly maps",
         used_for=["Anomaly detection", "Zero-shot", "Text prompts"],
-        repo_id="cubert-gmbh/steervit",
+        repo_id="JonaRuthardt/SteerViT",
         filename="steervit_dinov2_base.pth",
-        revision="1a999b3147722af849e810c8c46f409b59ae1e7f",
+        revision="4468b69138d397fd329df00e80093387c26c77b2",  # pragma: allowlist secret
         sha256="3ee74e5fba5cdbcbbdc35042b59fc44d54a68864724186c0ba4f5e2174892e3a",
         size_bytes=92_849_183,
-        license="Apache-2.0",
-        license_file="LICENSE",
+        license="other",
+        license_file=None,
         aliases=["steervit_dinov2_base.pth"],
         selected_by="checkpoint",
         default=True,
         description=(
-            "SteerViT checkpoint, DINOv2 base variant: the prompt connector, the gated "
-            "cross-attention layers and the segmentation head every SteerViTExtractor "
-            "loads (mirror of JonaRuthardt/SteerViT at 4468b691, unmodified)."
+            "Original SteerViT checkpoint, DINOv2 base variant: the prompt connector, the "
+            "gated cross-attention layers and the segmentation head (JonaRuthardt/SteerViT "
+            "at 4468b691). The upstream model card marks it for research use since "
+            "9 Oct 2026; for a product use a commercial checkpoint."
+        ),
+    ),
+    PluginWeightEntry(
+        name=STEERVIT_COMMERCIAL_SMALL,
+        display_name="SteerViT commercial (DINOv2 small)",
+        summary="Prompt-steered features, commercial use (Apache-2.0)",
+        used_for=["Anomaly detection", "Zero-shot", "Text prompts"],
+        repo_id=COMMERCIAL_HF_REPO,
+        filename="steervit_dinov2_commercial_small.pth",
+        revision=COMMERCIAL_HF_REVISION,
+        sha256="6c23756039ebddb01c262710cb2f9ea774e905a6e134946b3176dbcc96c969ee",
+        size_bytes=48_284_373,
+        license="Apache-2.0",
+        license_file="LICENSE",
+        aliases=["steervit_dinov2_commercial_small.pth"],
+        selected_by="checkpoint",
+        description=(
+            "Commercial SteerViT checkpoint, DINOv2 small variant (ViT-S/14 trunk, 384-d "
+            "features), published by the authors under Apache-2.0 (mirror of "
+            "JonaRuthardt/SteerViT at 18469724, unmodified)."
+        ),
+    ),
+    PluginWeightEntry(
+        name=STEERVIT_COMMERCIAL_BASE,
+        display_name="SteerViT commercial (DINOv2 base)",
+        summary="Prompt-steered features, commercial use (Apache-2.0)",
+        used_for=["Anomaly detection", "Zero-shot", "Text prompts"],
+        repo_id=COMMERCIAL_HF_REPO,
+        filename="steervit_dinov2_commercial_base.pth",
+        revision=COMMERCIAL_HF_REVISION,
+        sha256="f863021d5aaedbfd4b11d5be639936f56cfe3111ab90db6b8f9c60e40ee64833",
+        size_bytes=92_345_957,
+        license="Apache-2.0",
+        license_file="LICENSE",
+        aliases=["steervit_dinov2_commercial_base.pth"],
+        selected_by="checkpoint",
+        description=(
+            "Commercial SteerViT checkpoint, DINOv2 base variant (ViT-B/14 trunk, 768-d "
+            "features), published by the authors under Apache-2.0 (mirror of "
+            "JonaRuthardt/SteerViT at 18469724, unmodified)."
         ),
     ),
     PluginWeightEntry(

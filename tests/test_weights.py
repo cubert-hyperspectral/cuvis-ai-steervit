@@ -12,9 +12,13 @@ from cuvis_ai_schemas.plugin import PluginWeightEntry
 
 import cuvis_ai_steervit.node.steervit as mod
 from cuvis_ai_steervit.weights import (
+    COMMERCIAL_HF_REPO,
+    COMMERCIAL_HF_REVISION,
     DINOV2_TRUNK,
     PLUGIN_NAME,
     STEERVIT_CHECKPOINT,
+    STEERVIT_COMMERCIAL_BASE,
+    STEERVIT_COMMERCIAL_SMALL,
     TEXT_ENCODER,
     WEIGHTS,
 )
@@ -25,16 +29,25 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def test_rows_are_registered_at_import():
-    assert [e.name for e in WEIGHTS] == [STEERVIT_CHECKPOINT, DINOV2_TRUNK, TEXT_ENCODER]
+    assert [e.name for e in WEIGHTS] == [
+        STEERVIT_CHECKPOINT,
+        STEERVIT_COMMERCIAL_SMALL,
+        STEERVIT_COMMERCIAL_BASE,
+        DINOV2_TRUNK,
+        TEXT_ENCODER,
+    ]
     for entry in WEIGHTS:
         row = ModelWeights.get(entry.name)
         assert row.entry == entry and row.plugin == PLUGIN_NAME
     assert ModelWeights.get("steervit_dinov2_base.pth").name == STEERVIT_CHECKPOINT
 
 
-def test_every_row_is_provisioned_with_the_plugin():
-    """The checkpoint is the default of its selector; the trunk and the text encoder have none."""
-    assert all(ModelWeights.get(e.name).plugin_default for e in WEIGHTS)
+def test_the_default_checkpoint_trunk_and_text_encoder_are_provisioned_with_the_plugin():
+    """The original checkpoint is the default of its selector, the trunk and the text encoder have
+    none; the commercial checkpoints are options, provisioned when a pipeline selects them."""
+    optional = {STEERVIT_COMMERCIAL_SMALL, STEERVIT_COMMERCIAL_BASE}
+    for entry in WEIGHTS:
+        assert ModelWeights.get(entry.name).plugin_default is (entry.name not in optional)
 
 
 def test_the_checkpoint_row_is_what_the_node_asks_for_by_default():
@@ -58,3 +71,28 @@ def test_the_manifest_weights_block_matches_the_declarations():
     manifest = yaml.safe_load((REPO / "plugins.yaml").read_text(encoding="utf-8"))
     rows = [PluginWeightEntry.model_validate(row) for row in manifest["weights"]]
     assert rows == list(WEIGHTS)
+
+
+def test_the_commercial_rows_are_the_apache_mirror_selected_by_checkpoint():
+    for name, filename in (
+        (STEERVIT_COMMERCIAL_SMALL, mod.COMMERCIAL_SMALL_CHECKPOINT),
+        (STEERVIT_COMMERCIAL_BASE, mod.COMMERCIAL_BASE_CHECKPOINT),
+    ):
+        entry = ModelWeights.get(name).entry
+        assert (entry.repo_id, entry.revision, entry.filename) == (
+            COMMERCIAL_HF_REPO,
+            COMMERCIAL_HF_REVISION,
+            filename,
+        )
+        assert entry.license == "Apache-2.0" and entry.selected_by == "checkpoint"
+        assert not entry.default
+        assert ModelWeights.get(filename).name == name
+        assert (
+            mod._REGISTRY_CHECKPOINTS[(COMMERCIAL_HF_REPO, COMMERCIAL_HF_REVISION, filename)]
+            == name
+        )
+
+
+def test_the_original_row_says_research_use():
+    entry = ModelWeights.get(STEERVIT_CHECKPOINT).entry
+    assert entry.license == "other" and "research" in entry.description

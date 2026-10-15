@@ -17,9 +17,11 @@ dropped. Inference is the vision backbone alone, the pipeline ``.pt`` carries ~0
 ~1.8 GB, and the numerics are those of the original text-conditioned forward. The weights are
 frozen (no ``TRAINABLE_BUFFERS``, no Phase 1). The three files the model is built from (the
 SteerViT checkpoint, the DINOv2 trunk and the RoBERTa-large text encoder) come from cuvis-ai-core's
-model-weight registry, which serves the byte-identical ``cubert-gmbh`` mirrors from the shared
-cache (``download-model download steervit_dinov2_base vit_base_patch14_dinov2_lvd142m
-roberta_large`` provisions them for an offline runtime); the weights then travel with the pipeline
+model-weight registry from the shared cache (``download-model download steervit_dinov2_base
+vit_base_patch14_dinov2_lvd142m roberta_large`` provisions them for an offline runtime). The
+default checkpoint is the original one, marked for research use by its upstream model card; the
+commercial ``steervit_dinov2_commercial_small`` and ``_base`` checkpoints (Apache-2.0) are options
+of ``checkpoint`` / ``hf_repo``. The weights then travel with the pipeline
 ``.pt`` like any pretrained node. Input is an RGB
 frame in ``[0, 1]`` (e.g. a false-RGB projection after
 :class:`~cuvis_ai_steervit.node.stretch.JointPercentileStretch`); the node resizes it to the
@@ -46,26 +48,44 @@ from cuvis_ai_schemas.enums import NodeCategory, NodeTag
 from cuvis_ai_schemas.pipeline import PortSpec
 from torch import Tensor, nn
 
-from cuvis_ai_steervit.weights import DINOV2_TRUNK, STEERVIT_CHECKPOINT, TEXT_ENCODER
+from cuvis_ai_steervit.weights import (
+    COMMERCIAL_HF_REPO,
+    COMMERCIAL_HF_REVISION,
+    DINOV2_TRUNK,
+    STEERVIT_CHECKPOINT,
+    STEERVIT_COMMERCIAL_BASE,
+    STEERVIT_COMMERCIAL_SMALL,
+    TEXT_ENCODER,
+)
 
 DEFAULT_CHECKPOINT = "steervit_dinov2_base.pth"
-DEFAULT_HF_REPO = "cubert-gmbh/steervit"
-# The commit of DEFAULT_HF_REPO with the validated checkpoint (the tests' golden reference), a
-# byte-identical mirror of UPSTREAM_HF_REPO at UPSTREAM_HF_REVISION.
-DEFAULT_HF_REVISION = "1a999b3147722af849e810c8c46f409b59ae1e7f"  # pragma: allowlist secret
 UPSTREAM_HF_REPO = "JonaRuthardt/SteerViT"
+# The validated commit of the original base checkpoint (the tests' golden reference).
 UPSTREAM_HF_REVISION = "4468b69138d397fd329df00e80093387c26c77b2"  # pragma: allowlist secret
-# (hf_repo, hf_revision, checkpoint) of the mirrored checkpoint: the mirror itself and the upstream
-# file it copies, which the pipelines saved before the mirror record in their hparams. Pipelines
-# saved before `hf_revision` existed record the upstream repository alone, so the revision takes
-# the node default; with the upstream repository that names the same validated file.
-_MIRRORED_CHECKPOINTS = frozenset(
-    {
-        (DEFAULT_HF_REPO, DEFAULT_HF_REVISION, DEFAULT_CHECKPOINT),
-        (UPSTREAM_HF_REPO, UPSTREAM_HF_REVISION, DEFAULT_CHECKPOINT),
-        (UPSTREAM_HF_REPO, DEFAULT_HF_REVISION, DEFAULT_CHECKPOINT),
-    }
-)
+DEFAULT_HF_REPO = UPSTREAM_HF_REPO
+DEFAULT_HF_REVISION = UPSTREAM_HF_REVISION
+# A byte-identical copy of the original checkpoint under cubert-gmbh, no longer public; yamls
+# that name it still resolve through the registry entry of the upstream file.
+FORMER_MIRROR_HF_REPO = "cubert-gmbh/steervit"
+FORMER_MIRROR_HF_REVISION = "1a999b3147722af849e810c8c46f409b59ae1e7f"  # pragma: allowlist secret
+COMMERCIAL_SMALL_CHECKPOINT = "steervit_dinov2_commercial_small.pth"
+COMMERCIAL_BASE_CHECKPOINT = "steervit_dinov2_commercial_base.pth"
+# (hf_repo, hf_revision, checkpoint) -> registry name of the checkpoints the registry serves.
+# Pipelines saved before `hf_revision` existed record the upstream repository alone, so the
+# revision takes the node default; with the upstream repository that names the same file.
+_REGISTRY_CHECKPOINTS = {
+    (UPSTREAM_HF_REPO, UPSTREAM_HF_REVISION, DEFAULT_CHECKPOINT): STEERVIT_CHECKPOINT,
+    (FORMER_MIRROR_HF_REPO, FORMER_MIRROR_HF_REVISION, DEFAULT_CHECKPOINT): STEERVIT_CHECKPOINT,
+    (UPSTREAM_HF_REPO, FORMER_MIRROR_HF_REVISION, DEFAULT_CHECKPOINT): STEERVIT_CHECKPOINT,
+    (COMMERCIAL_HF_REPO, COMMERCIAL_HF_REVISION, COMMERCIAL_SMALL_CHECKPOINT): (
+        STEERVIT_COMMERCIAL_SMALL
+    ),
+    (
+        COMMERCIAL_HF_REPO,
+        COMMERCIAL_HF_REVISION,
+        COMMERCIAL_BASE_CHECKPOINT,
+    ): STEERVIT_COMMERCIAL_BASE,
+}
 # Model ids a checkpoint's config names that have a mirror, by registry name.
 _MIRRORED_TRUNKS = {"vit_base_patch14_dinov2.lvd142m": DINOV2_TRUNK}
 _MIRRORED_TEXT_ENCODERS = {"roberta-large": TEXT_ENCODER, "facebookai/roberta-large": TEXT_ENCODER}
@@ -100,18 +120,20 @@ def _tf32_matmul(enabled: bool) -> Iterator[None]:
 def _checkpoint_path(checkpoint: str, hf_repo: str, hf_revision: str | None) -> str:
     """Local path of the SteerViT checkpoint the node's hyper-parameters name.
 
-    A local file is used as is. The mirrored checkpoint, named by the mirror or by the upstream
-    file it copies, comes from cuvis-ai-core's model-weight registry: the shared cache,
-    sha256-verified, downloaded anonymously when online and, in an offline runtime without it, an
-    error naming the ``download-model`` command. Any other repository, revision or file is
-    downloaded from the hub at the given revision.
+    A local file is used as is. The checkpoints the plugin registers (the original base file,
+    also under the name of its former mirror, and the commercial small and base files) come from
+    cuvis-ai-core's model-weight registry: the shared cache, sha256-verified, downloaded
+    anonymously when online and, in an offline runtime without it, an error naming the
+    ``download-model`` command. Any other repository, revision or file is downloaded from the hub
+    at the given revision.
     """
     if os.path.isfile(checkpoint):
         return checkpoint
-    if (hf_repo, hf_revision, checkpoint) in _MIRRORED_CHECKPOINTS:
+    registered = _REGISTRY_CHECKPOINTS.get((hf_repo, hf_revision, checkpoint))
+    if registered is not None:
         from cuvis_ai_core.data.model_weights import ModelWeights
 
-        return str(ModelWeights.resolve(STEERVIT_CHECKPOINT))
+        return str(ModelWeights.resolve(registered))
     from huggingface_hub import hf_hub_download
 
     return hf_hub_download(repo_id=hf_repo, filename=checkpoint, revision=hf_revision)
@@ -300,12 +322,17 @@ class SteerViTExtractor(Node):
 
         Parameters
         ----------
-        checkpoint : local path of a SteerViT checkpoint, or its filename in ``hf_repo``.
+        checkpoint : local path of a SteerViT checkpoint, or its filename in ``hf_repo``. The
+            default is the original base checkpoint, whose upstream model card marks it for
+            research use; for a product choose a commercial checkpoint (Apache-2.0):
+            ``steervit_dinov2_commercial_small.pth`` or ``steervit_dinov2_commercial_base.pth``
+            with ``hf_repo="cubert-gmbh/steervit-commercial"`` and its pinned ``hf_revision``.
+            Their features differ, so a pipeline that switches refits its memory banks.
         hf_repo : Hugging Face repository the checkpoint is downloaded from when not a local path.
-            The default is the ``cubert-gmbh/steervit`` mirror, served by cuvis-ai-core's
-            model-weight registry (``steervit_dinov2_base``); the upstream
-            ``JonaRuthardt/SteerViT`` at its validated commit, which pipelines saved before the
-            mirror name, resolves to the same registry entry.
+            The default is ``JonaRuthardt/SteerViT`` at the validated commit. That file and the
+            commercial checkpoints in ``cubert-gmbh/steervit-commercial`` are served by
+            cuvis-ai-core's model-weight registry; the former mirror ``cubert-gmbh/steervit``,
+            which some pipelines name, resolves to the same entry as the upstream file.
         hf_revision : commit of ``hf_repo`` the checkpoint is downloaded at; the default is the
             validated commit of the default repository, so set it (or ``None`` for the repo's
             default branch) together with another ``hf_repo``. Unused for a local path.
