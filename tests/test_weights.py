@@ -95,4 +95,4 @@ def test_the_commercial_rows_are_the_apache_mirror_selected_by_checkpoint():
 
 def test_the_original_row_says_research_use():
     entry = ModelWeights.get(STEERVIT_CHECKPOINT).entry
-    assert entry.license == "other" and "research" in entry.description
+    assert entry.license == "Research use only" and "research" in entry.description

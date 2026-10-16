@@ -99,7 +99,7 @@ weights:
   revision: 4468b69138d397fd329df00e80093387c26c77b2
   sha256: 3ee74e5fba5cdbcbbdc35042b59fc44d54a68864724186c0ba4f5e2174892e3a
   size_bytes: 92849183
-  license: other
+  license: Research use only
   aliases: [steervit_dinov2_base.pth]
   selected_by: checkpoint
   default: true
