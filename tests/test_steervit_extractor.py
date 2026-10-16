@@ -258,13 +258,16 @@ def test_the_default_checkpoint_comes_from_the_registry(monkeypatch, tmp_path, r
     assert loader.paths == [str(tmp_path / "cache" / "steervit_dinov2_base" / "weights.bin")]
 
 
+@pytest.mark.parametrize("hf_revision", [mod.UPSTREAM_HF_REVISION, mod.FORMER_MIRROR_HF_REVISION])
 def test_the_upstream_file_saved_pipelines_name_resolves_to_the_mirror(
-    monkeypatch, registry, no_hub
+    monkeypatch, registry, no_hub, hf_revision
 ):
-    """Pipelines saved before the mirror record the upstream repository and its pinned commit."""
+    """Pipelines saved before the mirror record the upstream repository and its pinned commit;
+    pipelines saved while the mirror was the default may record its commit under the upstream
+    name."""
     loader = _Recorder()
     monkeypatch.setattr(mod, "_build_steervit", loader)
-    SteerViTExtractor(hf_repo=mod.UPSTREAM_HF_REPO, hf_revision=mod.UPSTREAM_HF_REVISION, name="sv")
+    SteerViTExtractor(hf_repo=mod.UPSTREAM_HF_REPO, hf_revision=hf_revision, name="sv")
     assert registry == ["steervit_dinov2_base"]
 
 
@@ -407,6 +410,20 @@ def test_build_leaves_unmirrored_models_to_their_own_loaders(monkeypatch, tmp_pa
     assert vendored.calls == [
         ("vit_small_patch14_dinov2.lvd142m", {"pretrained": True, "img_size": 4})
     ]
+
+
+def test_build_rejects_an_unexpected_text_encoder_folder(monkeypatch, tmp_path):
+    """The vendored model dispatches on "roberta" in the text-encoder name; a mirror folder
+    without it stops here, with the folder named, instead of in the vendored constructor."""
+    from cuvis_ai_core.data.model_weights import ModelWeights
+
+    monkeypatch.setattr(
+        ModelWeights, "resolve", lambda name, **kwargs: tmp_path / "other" / "model.safetensors"
+    )
+    with pytest.raises(RuntimeError, match="unexpected text encoder folder"):
+        mod._build_steervit(
+            _checkpoint(tmp_path, "roberta-large", "vit_base_patch14_dinov2.lvd142m")
+        )
 
 
 def test_the_trunk_stand_in_is_removed_after_an_error():
