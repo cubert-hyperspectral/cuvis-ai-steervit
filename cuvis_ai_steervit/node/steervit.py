@@ -17,9 +17,10 @@ dropped. Inference is the vision backbone alone, the pipeline ``.pt`` carries ~0
 ~1.8 GB, and the numerics are those of the original text-conditioned forward. The weights are
 frozen (no ``TRAINABLE_BUFFERS``, no Phase 1). The three files the model is built from (the
 SteerViT checkpoint, the DINOv2 trunk and the RoBERTa-large text encoder) come from cuvis-ai-core's
-model-weight registry from the shared cache (``download-model download steervit_dinov2_base
-vit_base_patch14_dinov2_lvd142m roberta_large`` provisions them for an offline runtime). The
-default checkpoint is the original one, marked for research use by its upstream model card; the
+model-weight registry from the shared cache; ``download-model download --plugins-dir <dir>
+steervit_dinov2_base vit_base_patch14_dinov2_lvd142m roberta_large`` provisions them for an offline
+runtime, where ``<dir>`` holds this plugin's ``plugins.yaml``. The default checkpoint is the
+original one, marked for research use by its upstream model card; the
 commercial ``steervit_dinov2_commercial_small`` and ``_base`` checkpoints (Apache-2.0) are options
 of ``checkpoint`` / ``hf_repo``. The weights then travel with the pipeline
 ``.pt`` like any pretrained node. Input is an RGB

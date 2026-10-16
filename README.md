@@ -179,11 +179,13 @@ Online, the first construction fetches them into the shared cache. An offline de
 (`HF_HUB_OFFLINE=1`, e.g. a CuvisNEXT child environment) provisions them once:
 
 ```bash
-uv run download-model download steervit_dinov2_base vit_base_patch14_dinov2_lvd142m roberta_large
+uv run download-model download --plugins-dir . steervit_dinov2_base vit_base_patch14_dinov2_lvd142m roberta_large
 ```
 
-A local `checkpoint` path skips the registry for the checkpoint; another `hf_repo` or revision is
-downloaded from the hub.
+`--plugins-dir .` names the directory that holds this `plugins.yaml`: the CLI reads weight rows
+from plugin manifests, not from the installed package, and without the flag it knows only the rows
+of cuvis-ai's packaged catalog. A local `checkpoint` path skips the registry for the checkpoint;
+another `hf_repo` or revision is downloaded from the hub.
 
 ## Vendored upstream code
 
