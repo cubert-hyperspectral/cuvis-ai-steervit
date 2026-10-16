@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## 0.3.1 - 2026-10-16
+
+### Added
+- Added `cuvis_ai_steervit.weights`: the files `SteerViTExtractor` builds its model from, pinned by
+  revision, sha256 and size: the original checkpoint `steervit_dinov2_base` (from
+  `JonaRuthardt/SteerViT` at `4468b691`), the DINOv2 trunk `vit_base_patch14_dinov2_lvd142m` and the
+  text encoder `roberta_large` (byte-identical `cubert-gmbh` mirrors). The package registers them
+  with cuvis-ai-core's `ModelWeights` at import and the manifest lists them in its `weights:` block
+  (`emit_metadata`), so `download-model` and CuvisNEXT provision them for an offline runtime.
+- Added the commercial SteerViT checkpoints as options: `steervit_dinov2_commercial_small` (ViT-S/14
+  trunk, 384-d features) and `steervit_dinov2_commercial_base` (ViT-B/14, 768-d), which the authors
+  publish under Apache-2.0, from the unchanged mirror `cubert-gmbh/steervit-commercial` at
+  `8c2a0918`. A pipeline selects one with `checkpoint: steervit_dinov2_commercial_small.pth` (or
+  `_base.pth`), `hf_repo: cubert-gmbh/steervit-commercial` and that `hf_revision`; they are fetched
+  only when selected. Their features differ from the original checkpoint's, so a pipeline that
+  switches refits its memory banks and re-validates. The small checkpoint's ViT-S/14 trunk is not
+  mirrored; timm fetches it from `timm/vit_small_patch14_dinov2.lvd142m`.
+
+### Changed
+- `SteerViTExtractor` reads its checkpoint, the DINOv2 trunk and RoBERTa-large through the
+  model-weight registry (the shared cache, sha256-verified, fetched anonymously when online; an
+  offline runtime without them gets an error naming `download-model`) instead of downloading them
+  from three upstream repositories at construction. `hf_repo` keeps its default,
+  `JonaRuthardt/SteerViT` at `4468b691`, now resolved through the registry; the former mirror
+  `cubert-gmbh/steervit` at `1a999b31` (no longer public) resolves to the same entry, and any other
+  repository or revision is still downloaded from the hub. The upstream model card marks the
+  original checkpoint for research use since 9 Oct 2026; the registry row says so (`license: Research use only`).
+  The vendored files are unchanged: during construction the vendored backbone's `timm` is a stand-in
+  that loads the trunk from the registry file (`pretrained_cfg_overlay`), and the text encoder loads
+  from the mirror's snapshot folder. The bytes are the same, so the outputs are too.
+
 ## 0.3.0 - 2026-09-28
 
 ### Added

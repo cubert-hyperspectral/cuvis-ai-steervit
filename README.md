@@ -15,7 +15,7 @@ The backbone is text-conditioned, so every prompt is one backbone pass; the node
 ensemble into a single call. The prompts are fixed hyper-parameters, so the text tower
 (RoBERTa-large) runs once at construction: its encodings are cached as buffers and the tower is
 dropped, leaving the vision backbone (~0.4 GB) for inference and for the pipeline `.pt`. Weights
-are frozen (no Phase 1, no `TRAINABLE_BUFFERS`), downloaded from the Hugging Face hub at
+are frozen (no Phase 1, no `TRAINABLE_BUFFERS`), read from cuvis-ai-core's model-weight registry at
 construction and stored in the pipeline `.pt` afterwards.
 
 Requires `cuvis-ai-core >= 0.17.4` and `cuvis-ai-schemas >= 0.12.0` on Python 3.11 – 3.13.
@@ -33,9 +33,9 @@ Requires `cuvis-ai-core >= 0.17.4` and `cuvis-ai-schemas >= 0.12.0` on Python 3.
 
 | hparam | default | meaning |
 |---|---|---|
-| `checkpoint` | `steervit_dinov2_base.pth` | local checkpoint path, or its filename in `hf_repo` |
-| `hf_repo` | `JonaRuthardt/SteerViT` | Hugging Face repository the checkpoint is fetched from |
-| `hf_revision` | `4468b691…` (validated commit) | commit of `hf_repo` the checkpoint is fetched at; set it (or `null` for the default branch) together with another `hf_repo` |
+| `checkpoint` | `steervit_dinov2_base.pth` | local checkpoint path, or its filename in `hf_repo`; the default is the original checkpoint (research use per its upstream model card), `steervit_dinov2_commercial_small.pth` / `steervit_dinov2_commercial_base.pth` are the commercial ones (Apache-2.0, see below) |
+| `hf_repo` | `JonaRuthardt/SteerViT` | Hugging Face repository the checkpoint is fetched from; the default, `cubert-gmbh/steervit-commercial` (commercial checkpoints) and the former mirror `cubert-gmbh/steervit` resolve through the model-weight registry |
+| `hf_revision` | `4468b691…` (validated commit) | commit of `hf_repo` the checkpoint is fetched at; `8c2a0918…` for `cubert-gmbh/steervit-commercial`; set it (or `null` for the default branch) together with another `hf_repo` |
 | `prompts` | `["the anomaly in the object"]` | prompt ensemble of the zero-shot map (one backbone pass each); `"the anomaly in the <object>"` phrasings work best |
 | `feature_prompt` | `null` | prompt steering `features`; `null` = `prompts[0]`; a prompt outside `prompts` costs one extra pass |
 | `topk_frac` | 0.001 | pixel fraction averaged into `anomaly_score` |
@@ -162,11 +162,30 @@ plugins:
 ```
 
 Dependencies are deliberately slim: `torch`, `timm<2` (DINOv2 trunk), `transformers>=4.57` (the
-RoBERTa text tower; 5.x verified) and `huggingface_hub`. The first construction downloads three
-files into the Hugging Face cache: the SteerViT checkpoint (93 MB, at `hf_revision`), the timm
-DINOv2 ViT-B/14 weights (346 MB) and `roberta-large` (1.42 GB). An offline deployment
-(`HF_HUB_OFFLINE=1`, e.g. a cuvis.next child environment) needs a warm cache holding all three, or
-a local `checkpoint` path plus the two cached backbones.
+RoBERTa text tower; 5.x verified) and `huggingface_hub`. The node is built from three files: a
+SteerViT checkpoint, the DINOv2 trunk and the text encoder. They are declared in
+`cuvis_ai_steervit/weights.py` and in the manifest's `weights:` block and served by cuvis-ai-core's
+model-weight registry (commit-pinned, sha256-verified, no token needed):
+
+| registry name | repository | size | licence |
+|---|---|---|---|
+| `steervit_dinov2_base` | `JonaRuthardt/SteerViT` (original SteerViT checkpoint, the default) | 93 MB | research use per the upstream model card |
+| `steervit_dinov2_commercial_small` | `cubert-gmbh/steervit-commercial` (commercial checkpoint, ViT-S/14, 384-d features; option) | 48 MB | Apache-2.0 |
+| `steervit_dinov2_commercial_base` | `cubert-gmbh/steervit-commercial` (commercial checkpoint, ViT-B/14, 768-d features; option) | 92 MB | Apache-2.0 |
+| `vit_base_patch14_dinov2_lvd142m` | `cubert-gmbh/vit_base_patch14_dinov2.lvd142m` (DINOv2 ViT-B/14 trunk) | 346 MB | Apache-2.0 |
+| `roberta_large` | `cubert-gmbh/roberta-large` (text encoder and tokenizer files) | 1.42 GB | MIT |
+
+Online, the first construction fetches them into the shared cache. An offline deployment
+(`HF_HUB_OFFLINE=1`, e.g. a CuvisNEXT child environment) provisions them once:
+
+```bash
+uv run download-model download --plugins-dir . steervit_dinov2_base vit_base_patch14_dinov2_lvd142m roberta_large
+```
+
+`--plugins-dir .` names the directory that holds this `plugins.yaml`: the CLI reads weight rows
+from plugin manifests, not from the installed package, and without the flag it knows only the rows
+of cuvis-ai's packaged catalog. A local `checkpoint` path skips the registry for the checkpoint;
+another `hf_repo` or revision is downloaded from the hub.
 
 ## Vendored upstream code
 
@@ -202,7 +221,8 @@ change, regenerate the lock with `uv lock --no-sources` (CI resolves torch from 
 
 - Ruthardt, J., Gaur, M., Ramanan, D., Tapaswi, M., Asano, Y. M. *Steerable Visual Representations.*
   arXiv 2604.02327 (SteerViT). Code: github.com/manugaurdl/SteerViT (MIT). Weights:
-  huggingface.co/JonaRuthardt/SteerViT (Apache-2.0).
+  huggingface.co/JonaRuthardt/SteerViT; the commercial checkpoints (Apache-2.0) are mirrored unchanged as
+  huggingface.co/cubert-gmbh/steervit-commercial.
 - Oquab, M. et al. *DINOv2: Learning Robust Visual Features without Supervision.* TMLR 2024.
 - Roth, K. et al. *Towards Total Recall in Industrial Anomaly Detection.* CVPR 2022 (PatchCore).
 

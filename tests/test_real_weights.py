@@ -3,8 +3,10 @@ reproduces the golden reference computed with the same weights in the validated 
 environment (steervit 0.2.0 install, transformers 4.x, CPU). Guards the preprocessing, the
 prompt batching and the transformers-major compatibility at once.
 
-Run with ``pytest -m slow``; needs the Hugging Face hub (or a warm cache) for the checkpoint, the
-timm DINOv2 trunk and roberta-base.
+Run with ``pytest -m slow``; the checkpoint, the timm DINOv2 trunk and RoBERTa-large come from
+cuvis-ai-core's model-weight registry (the ``cubert-gmbh`` mirrors): provisioned in the model cache
+(``download-model download steervit_dinov2_base vit_base_patch14_dinov2_lvd142m roberta_large``) or
+fetched from the hub when online.
 """
 
 from __future__ import annotations
