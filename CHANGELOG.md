@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Removed
+- Removed `JointPercentileStretch`, `ImageTiler` and `GridStitcher`, which are cuvis-ai built-ins
+  since cuvis-ai 0.19.1: `cuvis_ai.node.normalization.PercentileNormalizer` (`norm_mode: per_frame`,
+  `per_frame_quantiles: true`, `joint_channels: true`) gives the stretch bit for bit, and
+  `cuvis_ai.node.tiling.ImageTiler` / `GridStitcher` the tiling. cuvis-ai's `migrate-plugin-nodes`
+  rewrites a pipeline and its `.pt`; a pipeline that still names the old classes needs a 0.3.x
+  release. There was no deprecation release.
+
+### Changed
+- The examples run the stretch and the bank normalisers on the cuvis-ai built-ins.
+
 ## 0.3.1 - 2026-10-16
 
 ### Added

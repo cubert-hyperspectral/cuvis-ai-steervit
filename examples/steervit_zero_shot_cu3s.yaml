@@ -22,11 +22,16 @@ nodes:
       target_wavelengths: [640.0, 550.0, 470.0]
       normalize_output: false
   - name: stretch
-    class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
+    class_name: cuvis_ai.node.normalization.PercentileNormalizer
     hparams:
-      low: 2.0
-      high: 98.0
+      n_channels: 3
+      norm_mode: per_frame
+      per_frame_quantiles: true
+      joint_channels: true
+      quantile_low: 0.02
+      quantile_high: 0.98
       quantize_levels: 255
+      eps: 1.0e-06
   - name: steervit
     class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
     hparams:

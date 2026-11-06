@@ -339,7 +339,7 @@ def test_node_batches_follow_the_tilers(tmp_path):
         "nodes": [
             {
                 "name": "tiler",
-                "class_name": "cuvis_ai_steervit.node.tiling.ImageTiler",
+                "class_name": "cuvis_ai.node.tiling.ImageTiler",
                 "hparams": {"tiles": 2},
             },
             {

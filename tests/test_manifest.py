@@ -12,8 +12,6 @@ from cuvis_ai_core.node.node import Node
 from cuvis_ai_core.utils.node_registry import NodeRegistry
 
 from cuvis_ai_steervit.node.steervit import SteerViTExtractor
-from cuvis_ai_steervit.node.stretch import JointPercentileStretch
-from cuvis_ai_steervit.node.tiling import GridStitcher, ImageTiler
 
 pytestmark = pytest.mark.integration
 
@@ -26,9 +24,6 @@ def test_manifest_registers_plugin_and_resolves_nodes():
     registry.register_plugin(str(MANIFEST))
     assert registry.list_plugins() == ["steervit"]
     assert registry.get("SteerViTExtractor") is SteerViTExtractor
-    assert registry.get("JointPercentileStretch") is JointPercentileStretch
-    assert registry.get("ImageTiler") is ImageTiler
-    assert registry.get("GridStitcher") is GridStitcher
 
 
 def test_manifest_capabilities_are_importable_nodes():
