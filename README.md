@@ -26,7 +26,7 @@ Requires `cuvis-ai-core >= 0.17.4` and `cuvis-ai-schemas >= 0.12.0` on Python 3.
 
 | Port | Direction | Shape / dtype | Notes |
 |---|---|---|---|
-| `rgb_image` | in | `[B, H, W, 3]` float32 in `[0, 1]` | e.g. a false-RGB projection after `JointPercentileStretch`; resized (bicubic) to the model resolution and normalised internally |
+| `rgb_image` | in | `[B, H, W, 3]` float32 in `[0, 1]` | e.g. a false-RGB projection after cuvis-ai's per-frame `PercentileNormalizer`; resized (bicubic) to the model resolution and normalised internally |
 | `features` | out | `[B, G, G, D]` float32 | steered patch tokens on the patch grid (`[B, 24, 24, 768]` at 336 px), steered by `feature_prompt` |
 | `scores` | out | `[B, H, W, 1]` float32 | zero-shot prompted anomaly map, averaged over `prompts`, upsampled to the input size |
 | `anomaly_score` | out | `[B]` float32 | mean of the top `topk_frac` pixels of `scores` |
@@ -69,57 +69,42 @@ Under cuvis.next give deployed pipelines an explicit `engine_dir`: it runs each 
 its own empty home directory (`HOME` and `USERPROFILE`, on every platform), so the default folder has
 no engines. Build the engines with the same yaml; `build-pipeline` writes them there.
 
-### `cuvis_ai_steervit.node.stretch.JointPercentileStretch`
+### Stretch and tiling: cuvis-ai built-ins
 
-Per-frame percentile stretch of a BHWC tensor to `[0, 1]`, with the percentiles taken jointly over
-all channels (a per-channel stretch would re-balance the colour ratios). Stateless. `low` / `high`
-(default 2 / 98) are the percentiles mapped to 0 / 1; `per_channel: true` switches to per-channel
-bounds; `quantize_levels: 255` truncates to 8-bit levels exactly like a `uint8` image cast, which
-is how the validated SteerViT feature bank was fed.
+The joint-channel percentile stretch and the multi-scale tiling nodes this plugin shipped up to
+0.3.x are cuvis-ai built-ins since cuvis-ai 0.19.1, and 0.4.0 removed the plugin copies:
 
-| Port | Direction | Shape / dtype |
-|---|---|---|
-| `data` | in | `[B, H, W, C]` float32 |
-| `normalized` | out | `[B, H, W, C]` float32 in `[0, 1]` |
+| up to 0.3.x | cuvis-ai built-in |
+|---|---|
+| `cuvis_ai_steervit.node.stretch.JointPercentileStretch` | `cuvis_ai.node.normalization.PercentileNormalizer` with `norm_mode: per_frame`, `per_frame_quantiles: true`, `joint_channels: true` (and `quantize_levels: 255` for the 8-bit levels the SteerViT feature banks were fitted on); the same output bit for bit |
+| `cuvis_ai_steervit.node.tiling.ImageTiler` | `cuvis_ai.node.tiling.ImageTiler` |
+| `cuvis_ai_steervit.node.tiling.GridStitcher` | `cuvis_ai.node.tiling.GridStitcher` |
 
-### `cuvis_ai_steervit.node.tiling.ImageTiler` / `cuvis_ai_steervit.node.tiling.GridStitcher`
-
-Multi-scale helpers. `ImageTiler(tiles=T)` splits every image of a batch into a T x T grid of
-equal, non-overlapping tiles and stacks them along the batch (tile `(i, j)` of image `b` at index
-`b * T * T + i * T + j`), so a batched per-image node such as `SteerViTExtractor` runs on the tiles
-unchanged and resizes each tile to its own resolution. `GridStitcher(tiles=T)` reassembles the
-per-tile grids in the same order. With T = 2 the SteerViT patch grid becomes 48 x 48 instead of
-24 x 24, so a small object no longer shares its patch with the surrounding context. Both nodes are
-stateless reshapes (differentiable, device-agnostic); `ImageTiler` requires H and W divisible by T.
-They are generic and planned to move to cuvis-ai core.
-
-| Node | Port | Direction | Shape / dtype |
-|---|---|---|---|
-| `ImageTiler` | `image` | in | `[B, H, W, C]` float32 |
-| `ImageTiler` | `tiles` | out | `[B * T * T, H / T, W / T, C]` float32 |
-| `GridStitcher` | `tiles` | in | `[B * T * T, g_h, g_w, D]` float32 |
-| `GridStitcher` | `grid` | out | `[B, T * g_h, T * g_w, D]` float32 |
-
-A multi-scale feature bank runs the same prompt at two scales and averages the calibrated maps:
+cuvis-ai's `migrate-plugin-nodes` rewrites a pipeline yaml and its `.pt` from the old classes to
+the built-ins. With `ImageTiler(tiles=2)` in front of it the extractor sees the four tiles as one
+batch and its patch grid becomes 48 x 48 instead of 24 x 24, so a small object no longer shares
+its patch with the surrounding context. A multi-scale feature bank runs the same prompt at two
+scales and averages the calibrated maps:
 
 ```
-JointPercentileStretch ─┬─► SteerViTExtractor ─────────────────────────────► PatchCoreDetector ─► ScoreRangeNormalizer ─┐
-                        └─► ImageTiler(2) ─► SteerViTExtractor ─► GridStitcher(2) ─► PatchCoreDetector ─► ScoreRangeNormalizer ─┴─► ScoreMapFusion (mean)
+PercentileNormalizer ─┬─► SteerViTExtractor ─────────────────────────────► PatchCoreDetector ─► PercentileNormalizer ─┐
+(per frame)           └─► ImageTiler(2) ─► SteerViTExtractor ─► GridStitcher(2) ─► PatchCoreDetector ─► PercentileNormalizer ─┴─► ScoreMapFusion (mean)
 ```
 
 ## Pipeline sketch: two memory banks on a cu3s stream
 
 ```
-CU3SDataNode.cube ─┬─► PatchCoreDetector (61 bands, standardize) ──► ScoreRangeNormalizer ─┐
+CU3SDataNode.cube ─┬─► PatchCoreDetector (61 bands, standardize) ──► PercentileNormalizer ─┐
                    │                                                                        ├─► ScoreMapFusion (mean)
-                   └─► FixedWavelengthSelector 640/550/470 ─► JointPercentileStretch          │
-                          ─► SteerViTExtractor.features ─► PatchCoreDetector (768, standardize: false,
-                                                             reference = cube) ─► ScoreRangeNormalizer ─┘
+                   └─► FixedWavelengthSelector 640/550/470 ─► PercentileNormalizer          │
+                          (per frame) ─► SteerViTExtractor.features ─► PatchCoreDetector (768,
+                          standardize: false, reference = cube) ─► PercentileNormalizer ─────┘
 ```
 
-`PatchCoreDetector`, `ScoreRangeNormalizer` (each bank onto its normal range: fitted 1st / 99th
-percentiles, floored, never clamped above) and `ScoreMapFusion` come from cuvis-ai-patchcore; the
-selector is a cuvis-ai built-in. All fitted state comes from Phase 1 on normal frames. See `examples/`.
+`PatchCoreDetector` comes from cuvis-ai-patchcore. `PercentileNormalizer` (per frame before the
+extractor; after each bank a pooled fit onto its normal range: 1st / 99th percentiles, floored,
+never clamped above), `ScoreMapFusion` and the selector are cuvis-ai built-ins. All fitted state
+comes from Phase 1 on normal frames. See `examples/`.
 
 ## Install
 
@@ -132,9 +117,6 @@ path: "../cuvis-ai-steervit"
 package_name: cuvis-ai-steervit
 capabilities:
   - class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
-  - class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
-  - class_name: cuvis_ai_steervit.node.tiling.ImageTiler
-  - class_name: cuvis_ai_steervit.node.tiling.GridStitcher
 ```
 
 For a frozen, reproducible install, pin a release tag instead:
@@ -142,13 +124,10 @@ For a frozen, reproducible install, pin a release tag instead:
 ```yaml
 name: steervit
 repo: "https://github.com/cubert-hyperspectral/cuvis-ai-steervit.git"
-tag: "v0.1.0"
+tag: "v0.4.0"
 package_name: cuvis-ai-steervit
 capabilities:
   - class_name: cuvis_ai_steervit.node.steervit.SteerViTExtractor
-  - class_name: cuvis_ai_steervit.node.stretch.JointPercentileStretch
-  - class_name: cuvis_ai_steervit.node.tiling.ImageTiler
-  - class_name: cuvis_ai_steervit.node.tiling.GridStitcher
 ```
 
 [`plugins.yaml`](plugins.yaml) is the local-path manifest of this repository, with the palette

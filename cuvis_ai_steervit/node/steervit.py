@@ -24,9 +24,9 @@ original one, marked for research use by its upstream model card; the
 commercial ``steervit_dinov2_commercial_small`` and ``_base`` checkpoints (Apache-2.0) are options
 of ``checkpoint`` / ``hf_repo``. The weights then travel with the pipeline
 ``.pt`` like any pretrained node. Input is an RGB
-frame in ``[0, 1]`` (e.g. a false-RGB projection after
-:class:`~cuvis_ai_steervit.node.stretch.JointPercentileStretch`); the node resizes it to the
-model resolution and applies the model's own normalisation.
+frame in ``[0, 1]`` (e.g. a false-RGB projection after cuvis-ai's per-frame
+``PercentileNormalizer``); the node resizes it to the model resolution and applies the model's
+own normalisation.
 
 ``backend="tensorrt"`` runs the text-conditioned backbone pass and the head as a TensorRT engine
 built on the machine (:mod:`cuvis_ai_steervit.trt_engine`); the preprocessing, the prompt
