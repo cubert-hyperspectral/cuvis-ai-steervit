@@ -194,6 +194,9 @@ def build_engine(
     logger = _logger(trt)
     with tempfile.TemporaryDirectory() as tmp:
         onnx_path = export_onnx(graph, resolution, os.path.join(tmp, "steervit.onnx"))
+        # TensorRT allocates outside PyTorch's caching allocator: hand back the blocks PyTorch
+        # holds without a tensor (the export's GPU copy among them) before the builder needs memory.
+        torch.cuda.empty_cache()
         builder = trt.Builder(logger)
         network = builder.create_network(0)
         parser = trt.OnnxParser(network, logger)
@@ -254,6 +257,11 @@ class TensorRTEngine:
             if hasattr(trt, name)
         }
         self._runtime = trt.Runtime(_logger(trt))
+        # The engine and its working memory come from TensorRT's allocator, not PyTorch's. Hand
+        # back the blocks PyTorch's cache holds without a tensor first: a node loads its engine at
+        # its first frame, after the model setup and the nodes before it have filled that cache,
+        # and on a nearly full GPU the load would run out of memory although the room exists.
+        torch.cuda.empty_cache()
         with open(path, "rb") as f, torch.cuda.device(self.device):
             self._engine = self._runtime.deserialize_cuda_engine(f.read())
             self._stream = torch.cuda.Stream(self.device)
