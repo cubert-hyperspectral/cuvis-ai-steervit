@@ -9,6 +9,8 @@
   back first (`torch.cuda.empty_cache()`), and so does a build after the ONNX export. On an 8 GB
   RTX 2070 Max-Q a pipeline with four TensorRT nodes failed at its fourth engine, with about 2.4 GB
   freed but held by PyTorch (reserved 4644 MiB, allocated 2191 MiB).
+- Fixed the error of a failed engine load sending users off to rebuild the engine when the GPU had
+  run out of memory: it now gives the free GPU memory and names both causes, out of memory first.
 
 ## 0.3.1 - 2026-10-16
 

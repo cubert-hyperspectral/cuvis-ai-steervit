@@ -314,6 +314,36 @@ def test_engine_load_hands_back_torch_cached_memory_first(fake_trt, monkeypatch,
     assert engine.input_name == "input" and engine.input_shape == (1, 3, RES, RES)
 
 
+@pytest.mark.parametrize("memory_known", [True, False])
+def test_a_failed_engine_load_names_gpu_memory_before_a_rebuild(
+    fake_trt, monkeypatch, tmp_path, memory_known
+):
+    """A load that fails for lack of GPU memory must not send the user off to rebuild the engine."""
+
+    class Runtime:
+        def __init__(self, logger):
+            self.logger = logger
+
+        def deserialize_cuda_engine(self, blob):
+            return None  # what TensorRT returns after logging OutOfMemory or a version mismatch
+
+    def mem_get_info(device=None):
+        if not memory_known:
+            raise RuntimeError("no CUDA")
+        return 204 * 2**20, 8192 * 2**20
+
+    fake_trt.Runtime = Runtime
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "Stream", lambda device: object())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", mem_get_info)
+    path = tmp_path / "x.engine"
+    path.write_bytes(b"engine")
+    with pytest.raises(RuntimeError, match="Out of GPU memory.*rebuild it") as info:
+        trt_engine.TensorRTEngine(str(path), "cuda")
+    assert ("(204 of 8192 MiB GPU memory free)" in str(info.value)) == memory_known
+
+
 # ------------------------------------------------------------------ export and build
 def test_export_leaves_the_node_model_as_it_was(fake_loader, tmp_path):
     pytest.importorskip("onnx")

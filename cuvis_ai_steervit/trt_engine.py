@@ -233,6 +233,15 @@ def build_engine(
     return record
 
 
+def _free_memory_note(device: torch.device) -> str:
+    """`` (<free> of <total> MiB GPU memory free)`` for an error message, or ``""`` if unknown."""
+    try:
+        free, total = torch.cuda.mem_get_info(device)
+    except Exception:  # only decorates the error being raised; never replace it
+        return ""
+    return f" ({free / 2**20:.0f} of {total / 2**20:.0f} MiB GPU memory free)"
+
+
 class TensorRTEngine:
     """Run a serialized TensorRT engine (static shapes, one input) on torch CUDA tensors.
 
@@ -267,9 +276,11 @@ class TensorRTEngine:
             self._stream = torch.cuda.Stream(self.device)
         if self._engine is None:
             raise RuntimeError(
-                f"TensorRT could not load {path}: an engine only runs on the GPU and TensorRT "
-                "version it was built with - rebuild it on this machine "
-                "(python -m cuvis_ai_steervit.trt_engine build-pipeline ...)."
+                f"TensorRT could not load {path}{_free_memory_note(self.device)}; TensorRT's error "
+                "above names the cause. Out of GPU memory: free memory on this GPU (fewer models "
+                "or pipelines) and load it again. Built for another GPU or TensorRT version: "
+                "rebuild it on this machine (python -m cuvis_ai_steervit.trt_engine "
+                "build-pipeline ...)."
             )
         self._context = self._engine.create_execution_context()
         inputs: dict[str, tuple[torch.dtype, tuple[int, ...]]] = {}
