@@ -5,12 +5,14 @@ model call, so an engine that returns its outputs gives the torch backend's outp
 engine per batch size; the precision follows the node's options; engines are keyed by a fingerprint
 of the weights and prompts; a missing engine names the build command; new weights drop the loaded
 engines; the export leaves the node's model as it was; the build writes the engine plus its record;
-the CLI finds each node's batch from the pipeline graph. The ``slow`` test builds and runs real
+an engine build or load first hands PyTorch's cached GPU memory back (TensorRT allocates outside
+it); the CLI finds each node's batch from the pipeline graph. The ``slow`` test builds and runs real
 engines of the fake backbone where CUDA, TensorRT and onnx are available.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -265,6 +267,83 @@ def test_tensorrt_needs_cuda_names_the_build_command_and_checks_the_shape(
         node._load_engine(4, torch.device("cuda"))
 
 
+def test_engine_load_hands_back_torch_cached_memory_first(fake_trt, monkeypatch, tmp_path):
+    """TensorRT allocates outside PyTorch's cache: its free blocks go back before the engine loads.
+
+    A node loads its engine at its first frame, when the model setup and the nodes before it have
+    left freed blocks in PyTorch's cache; on a nearly full GPU the load ran out of memory.
+    """
+    calls = []
+
+    class Engine:
+        num_io_tensors = 1
+
+        def get_tensor_name(self, i):
+            return "input"
+
+        def get_tensor_dtype(self, name):
+            return "float32"
+
+        def get_tensor_shape(self, name):
+            return (1, 3, RES, RES)
+
+        def get_tensor_mode(self, name):
+            return "INPUT"
+
+        def create_execution_context(self):
+            calls.append("context")
+            return object()
+
+    class Runtime:
+        def __init__(self, logger):
+            self.logger = logger
+
+        def deserialize_cuda_engine(self, blob):
+            calls.append("deserialize")
+            return Engine()
+
+    fake_trt.Runtime, fake_trt.float32 = Runtime, "float32"
+    fake_trt.TensorIOMode = types.SimpleNamespace(INPUT="INPUT")
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "Stream", lambda device: object())
+    path = tmp_path / "x.engine"
+    path.write_bytes(b"engine")
+    engine = trt_engine.TensorRTEngine(str(path), "cuda")
+    assert calls == ["empty_cache", "deserialize", "context"]
+    assert engine.input_name == "input" and engine.input_shape == (1, 3, RES, RES)
+
+
+@pytest.mark.parametrize("memory_known", [True, False])
+def test_a_failed_engine_load_names_gpu_memory_before_a_rebuild(
+    fake_trt, monkeypatch, tmp_path, memory_known
+):
+    """A load that fails for lack of GPU memory must not send the user off to rebuild the engine."""
+
+    class Runtime:
+        def __init__(self, logger):
+            self.logger = logger
+
+        def deserialize_cuda_engine(self, blob):
+            return None  # what TensorRT returns after logging OutOfMemory or a version mismatch
+
+    def mem_get_info(device=None):
+        if not memory_known:
+            raise RuntimeError("no CUDA")
+        return 204 * 2**20, 8192 * 2**20
+
+    fake_trt.Runtime = Runtime
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "Stream", lambda device: object())
+    monkeypatch.setattr(torch.cuda, "mem_get_info", mem_get_info)
+    path = tmp_path / "x.engine"
+    path.write_bytes(b"engine")
+    with pytest.raises(RuntimeError, match="Out of GPU memory.*rebuild it") as info:
+        trt_engine.TensorRTEngine(str(path), "cuda")
+    assert ("(204 of 8192 MiB GPU memory free)" in str(info.value)) == memory_known
+
+
 # ------------------------------------------------------------------ export and build
 def test_export_leaves_the_node_model_as_it_was(fake_loader, tmp_path):
     pytest.importorskip("onnx")
@@ -315,6 +394,29 @@ def test_build_engine_failures(fake_loader, fake_trt, monkeypatch, tmp_path):
     monkeypatch.delattr(fake_trt.BuilderFlag, "FP16")
     with pytest.raises(RuntimeError, match="FP16"):
         trt_engine.build_engine(graph, RES, "fp16", str(tmp_path / "a"), "fp")
+
+
+def test_build_hands_back_torch_cached_memory_before_the_builder(
+    fake_loader, fake_trt, monkeypatch, tmp_path
+):
+    """The export's GPU copy and other freed blocks go back to the driver before TensorRT builds."""
+    calls = []
+    monkeypatch.setattr(
+        trt_engine,
+        "export_onnx",
+        lambda g, r, p: calls.append("export") or open(p, "wb").close() or p,
+    )
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("empty_cache"))
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda device=None: "Fake GPU")
+    build = fake_trt.Builder.build_serialized_network
+    monkeypatch.setattr(
+        fake_trt.Builder,
+        "build_serialized_network",
+        lambda self, network, config: calls.append("build") or build(self, network, config),
+    )
+    graph = SteerViTExtractor(prompts=PROMPTS)._steered_pass(1)
+    trt_engine.build_engine(graph, RES, "fp16", str(tmp_path / "x.engine"), "fp")
+    assert calls == ["export", "empty_cache", "build"]
 
 
 def test_node_build_engine_skips_an_existing_engine(fake_loader, monkeypatch, tmp_path):

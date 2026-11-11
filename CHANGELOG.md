@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+- Fixed `backend: tensorrt` running out of GPU memory when a node loads its engine at its first
+  frame on a nearly full GPU: TensorRT allocates outside PyTorch's caching allocator, so the blocks
+  PyTorch had freed but still held were out of its reach. Loading an engine now hands those blocks
+  back first (`torch.cuda.empty_cache()`), and so does a build after the ONNX export. On an 8 GB
+  RTX 2070 Max-Q a pipeline with four TensorRT nodes failed at its fourth engine, with about 2.4 GB
+  freed but held by PyTorch (reserved 4644 MiB, allocated 2191 MiB).
+- Fixed the error of a failed engine load sending users off to rebuild the engine when the GPU had
+  run out of memory: it now gives the free GPU memory and names both causes, out of memory first.
+
 ## 0.3.1 - 2026-10-16
 
 ### Added

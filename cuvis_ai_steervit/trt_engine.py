@@ -194,6 +194,9 @@ def build_engine(
     logger = _logger(trt)
     with tempfile.TemporaryDirectory() as tmp:
         onnx_path = export_onnx(graph, resolution, os.path.join(tmp, "steervit.onnx"))
+        # TensorRT allocates outside PyTorch's caching allocator: hand back the blocks PyTorch
+        # holds without a tensor (the export's GPU copy among them) before the builder needs memory.
+        torch.cuda.empty_cache()
         builder = trt.Builder(logger)
         network = builder.create_network(0)
         parser = trt.OnnxParser(network, logger)
@@ -230,6 +233,15 @@ def build_engine(
     return record
 
 
+def _free_memory_note(device: torch.device) -> str:
+    """`` (<free> of <total> MiB GPU memory free)`` for an error message, or ``""`` if unknown."""
+    try:
+        free, total = torch.cuda.mem_get_info(device)
+    except Exception:  # only decorates the error being raised; never replace it
+        return ""
+    return f" ({free / 2**20:.0f} of {total / 2**20:.0f} MiB GPU memory free)"
+
+
 class TensorRTEngine:
     """Run a serialized TensorRT engine (static shapes, one input) on torch CUDA tensors.
 
@@ -254,14 +266,21 @@ class TensorRTEngine:
             if hasattr(trt, name)
         }
         self._runtime = trt.Runtime(_logger(trt))
+        # The engine and its working memory come from TensorRT's allocator, not PyTorch's. Hand
+        # back the blocks PyTorch's cache holds without a tensor first: a node loads its engine at
+        # its first frame, after the model setup and the nodes before it have filled that cache,
+        # and on a nearly full GPU the load would run out of memory although the room exists.
+        torch.cuda.empty_cache()
         with open(path, "rb") as f, torch.cuda.device(self.device):
             self._engine = self._runtime.deserialize_cuda_engine(f.read())
             self._stream = torch.cuda.Stream(self.device)
         if self._engine is None:
             raise RuntimeError(
-                f"TensorRT could not load {path}: an engine only runs on the GPU and TensorRT "
-                "version it was built with - rebuild it on this machine "
-                "(python -m cuvis_ai_steervit.trt_engine build-pipeline ...)."
+                f"TensorRT could not load {path}{_free_memory_note(self.device)}; TensorRT's error "
+                "above names the cause. Out of GPU memory: free memory on this GPU (fewer models "
+                "or pipelines) and load it again. Built for another GPU or TensorRT version: "
+                "rebuild it on this machine (python -m cuvis_ai_steervit.trt_engine "
+                "build-pipeline ...)."
             )
         self._context = self._engine.create_execution_context()
         inputs: dict[str, tuple[torch.dtype, tuple[int, ...]]] = {}
